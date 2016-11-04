@@ -490,6 +490,42 @@ func (s *DockerSuite) TestRunWithInvalidCpuPeriod(c *check.C) {
 	c.Assert(out, checker.Contains, expected)
 }
 
+func (s *DockerSuite) TestRunWithHugetlbLimit(c *check.C) {
+	testRequires(c, hugetlbLimitSupport)
+
+	sysInfo := sysinfo.New(true)
+	dSize, err := sysInfo.GetDefaultHugepageSize()
+	c.Assert(err, check.IsNil)
+
+	file := fmt.Sprintf("/sys/fs/cgroup/hugetlb/hugetlb.%s.limit_in_bytes", dSize)
+	stdout, _, _ := dockerCmdWithStdoutStderr(c, "run", "--hugetlb-limit", dSize+":2G", "--name", "test1", "busybox", "cat", file)
+	c.Assert(strings.TrimSpace(stdout), checker.Equals, "2147483648")
+
+	out := inspectField(c, "test1", "HostConfig.Hugetlbs")
+	c.Assert(out, checker.Contains, "2147483648")
+}
+
+func (s *DockerSuite) TestRunWithInvalidHugetlbSize(c *check.C) {
+	testRequires(c, hugetlbLimitSupport)
+
+	size := "123M"
+	sysInfo := sysinfo.New(true)
+	dSize, err := sysInfo.GetDefaultHugepageSize()
+	c.Assert(err, check.IsNil)
+
+	file := fmt.Sprintf("/sys/fs/cgroup/hugetlb/hugetlb.%s.limit_in_bytes", size)
+	out, _, err := dockerCmdWithError("run", "--hugetlb-limit", size+":2G", "--name", "test1", "busybox", "cat", file)
+	c.Assert(err, check.NotNil)
+	expected := "Invalid hugepage size:123MB"
+	c.Assert(out, checker.Contains, expected)
+
+	file = fmt.Sprintf("/sys/fs/cgroup/hugetlb/hugetlb.%s.limit_in_bytes", dSize)
+	out, _, err = dockerCmdWithError("run", "--hugetlb-limit", dSize+":111M", "--name", "test1", "busybox", "cat", file)
+	c.Assert(err, check.IsNil)
+	expected = "should be times of huge page size"
+	c.Assert(out, checker.Contains, expected)
+}
+
 func (s *DockerSuite) TestRunWithKernelMemory(c *check.C) {
 	testRequires(c, kernelMemorySupport)
 

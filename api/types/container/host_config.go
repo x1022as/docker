@@ -265,6 +265,14 @@ type Resources struct {
 	CPUPercent         int64  `json:"CpuPercent"` // CPU percent
 	IOMaximumIOps      uint64 // Maximum IOps for the container system drive
 	IOMaximumBandwidth uint64 // Maximum IO in bytes per second for the container system drive
+
+	// Hugetlb setting
+	Hugetlbs []Hugetlb
+}
+
+type Hugetlb struct {
+	PageSize string
+	Limit    uint64
 }
 
 // UpdateConfig holds the mutable attributes of a Container.

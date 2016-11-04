@@ -49,6 +49,7 @@ func setResources(s *specs.Spec, r containertypes.Resources) error {
 		return err
 	}
 
+	hpRes := getHugetlbResources(r)
 	memoryRes := getMemoryResources(r)
 	cpuRes := getCPUResources(r)
 	blkioWeight := r.BlkioWeight
@@ -68,6 +69,7 @@ func setResources(s *specs.Spec, r containertypes.Resources) error {
 		Pids: &specs.Pids{
 			Limit: &r.PidsLimit,
 		},
+		HugepageLimits: hpRes,
 	}
 
 	if s.Linux.Resources != nil && len(s.Linux.Resources.Devices) > 0 {

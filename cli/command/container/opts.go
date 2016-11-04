@@ -54,6 +54,7 @@ type containerOptions struct {
 	storageOpt         opts.ListOpts
 	labelsFile         opts.ListOpts
 	loggingOpts        opts.ListOpts
+	hugetlb            opts.HugetlbOpt
 	privileged         bool
 	pidMode            string
 	utsMode            string
@@ -150,6 +151,7 @@ func addFlags(flags *pflag.FlagSet) *containerOptions {
 		ulimits:           opts.NewUlimitOpt(nil),
 		volumes:           opts.NewListOpts(nil),
 		volumesFrom:       opts.NewListOpts(nil),
+		hugetlb:           opts.NewHugetlbOpt(opts.ValidateHugetlb),
 	}
 
 	// General purpose flags
@@ -253,6 +255,7 @@ func addFlags(flags *pflag.FlagSet) *containerOptions {
 	flags.BoolVar(&copts.oomKillDisable, "oom-kill-disable", false, "Disable OOM Killer")
 	flags.IntVar(&copts.oomScoreAdj, "oom-score-adj", 0, "Tune host's OOM preferences (-1000 to 1000)")
 	flags.Int64Var(&copts.pidsLimit, "pids-limit", 0, "Tune container pids limit (set -1 for unlimited)")
+	flags.Var(&copts.hugetlb, "hugetlb-limit", "Huge page limit (format: [size:]<limit>, e.g. --hugetlb-limit 2MB:32MB)")
 
 	// Low-level execution (cgroups, namespaces, ...)
 	flags.StringVar(&copts.cgroupParent, "cgroup-parent", "", "Optional parent cgroup for the container")
@@ -522,6 +525,7 @@ func parse(flags *pflag.FlagSet, copts *containerOptions) (*container.Config, *c
 
 	resources := container.Resources{
 		CgroupParent:         copts.cgroupParent,
+		Hugetlbs:             copts.hugetlb.GetAll(),
 		Memory:               memory,
 		MemoryReservation:    memoryReservation,
 		MemorySwap:           memorySwap,
