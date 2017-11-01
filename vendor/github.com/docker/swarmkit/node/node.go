@@ -10,12 +10,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/boltdb/bolt"
 	"github.com/docker/docker/pkg/plugingetter"
+	metrics "github.com/docker/go-metrics"
 	"github.com/docker/swarmkit/agent"
 	"github.com/docker/swarmkit/agent/exec"
 	"github.com/docker/swarmkit/api"
@@ -26,12 +27,13 @@ import (
 	"github.com/docker/swarmkit/manager"
 	"github.com/docker/swarmkit/manager/encryption"
 	"github.com/docker/swarmkit/remotes"
-	"github.com/docker/swarmkit/watch"
 	"github.com/docker/swarmkit/xnet"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 )
 
@@ -41,6 +43,9 @@ const (
 )
 
 var (
+	nodeInfo    metrics.LabeledGauge
+	nodeManager metrics.Gauge
+
 	errNodeStarted    = errors.New("node: already started")
 	errNodeNotStarted = errors.New("node: not started")
 	certDirectory     = "certificates"
@@ -48,6 +53,16 @@ var (
 	// ErrInvalidUnlockKey is returned when we can't decrypt the TLS certificate
 	ErrInvalidUnlockKey = errors.New("node is locked, and needs a valid unlock key")
 )
+
+func init() {
+	ns := metrics.NewNamespace("swarm", "node", nil)
+	nodeInfo = ns.NewLabeledGauge("info", "Information related to the swarm", "",
+		"swarm_id",
+		"node_id",
+	)
+	nodeManager = ns.NewGauge("manager", "Whether this node is a manager or not", "")
+	metrics.Register(ns)
+}
 
 // Config provides values for a Node.
 type Config struct {
@@ -260,12 +275,13 @@ func (n *Node) run(ctx context.Context) (err error) {
 	}(ctx)
 
 	paths := ca.NewConfigPaths(filepath.Join(n.config.StateDir, certDirectory))
-	securityConfig, err := n.loadSecurityConfig(ctx, paths)
+	securityConfig, secConfigCancel, err := n.loadSecurityConfig(ctx, paths)
 	if err != nil {
 		return err
 	}
+	defer secConfigCancel()
 
-	renewer := ca.NewTLSRenewer(securityConfig, n.connBroker)
+	renewer := ca.NewTLSRenewer(securityConfig, n.connBroker, paths.RootCA)
 
 	ctx = log.WithLogger(ctx, log.G(ctx).WithField("node.id", n.NodeID()))
 
@@ -292,8 +308,6 @@ func (n *Node) run(ctx context.Context) (err error) {
 			case <-agentDone:
 				return
 			case nodeChanges := <-n.notifyNodeChange:
-				currentRole := n.currentRole()
-
 				if nodeChanges.Node != nil {
 					// This is a bit complex to be backward compatible with older CAs that
 					// don't support the Node.Role field. They only use what's presently
@@ -319,10 +333,7 @@ func (n *Node) run(ctx context.Context) (err error) {
 				}
 
 				if nodeChanges.RootCert != nil {
-					// We only want to update the root CA if this is a worker node.  Manager nodes directly watch the raft
-					// store and update the root CA, with the necessary signer, from the raft store (since the managers
-					// need the CA key as well to potentially issue new TLS certificates).
-					if currentRole == api.NodeRoleManager || bytes.Equal(nodeChanges.RootCert, securityConfig.RootCA().Certs) {
+					if bytes.Equal(nodeChanges.RootCert, securityConfig.RootCA().Certs) {
 						continue
 					}
 					newRootCA, err := ca.NewRootCA(nodeChanges.RootCert, nil, nil, ca.DefaultNodeCertExpiration, nil)
@@ -330,12 +341,12 @@ func (n *Node) run(ctx context.Context) (err error) {
 						log.G(ctx).WithError(err).Error("invalid new root certificate from the dispatcher")
 						continue
 					}
-					if err := ca.SaveRootCA(newRootCA, paths.RootCA); err != nil {
-						log.G(ctx).WithError(err).Error("could not save new root certificate from the dispatcher")
+					if err := securityConfig.UpdateRootCA(&newRootCA); err != nil {
+						log.G(ctx).WithError(err).Error("could not use new root CA from dispatcher")
 						continue
 					}
-					if err := securityConfig.UpdateRootCA(&newRootCA, newRootCA.Pool); err != nil {
-						log.G(ctx).WithError(err).Error("could not use new root CA from dispatcher")
+					if err := ca.SaveRootCA(newRootCA, paths.RootCA); err != nil {
+						log.G(ctx).WithError(err).Error("could not save new root certificate from the dispatcher")
 						continue
 					}
 				}
@@ -345,6 +356,17 @@ func (n *Node) run(ctx context.Context) (err error) {
 
 	var wg sync.WaitGroup
 	wg.Add(3)
+
+	nodeInfo.WithValues(
+		securityConfig.ClientTLSCreds.Organization(),
+		securityConfig.ClientTLSCreds.NodeID(),
+	).Set(1)
+
+	if n.currentRole() == api.NodeRoleManager {
+		nodeManager.Set(1)
+	} else {
+		nodeManager.Set(0)
+	}
 
 	updates := renewer.Start(ctx)
 	go func() {
@@ -357,6 +379,13 @@ func (n *Node) run(ctx context.Context) (err error) {
 			n.role = certUpdate.Role
 			n.roleCond.Broadcast()
 			n.Unlock()
+
+			// Export the new role.
+			if n.currentRole() == api.NodeRoleManager {
+				nodeManager.Set(1)
+			} else {
+				nodeManager.Set(0)
+			}
 		}
 
 		wg.Done()
@@ -400,10 +429,10 @@ func (n *Node) run(ctx context.Context) (err error) {
 	}()
 
 	wg.Wait()
-	if managerErr != nil && managerErr != context.Canceled {
+	if managerErr != nil && errors.Cause(managerErr) != context.Canceled {
 		return managerErr
 	}
-	if agentErr != nil && agentErr != context.Canceled {
+	if agentErr != nil && errors.Cause(agentErr) != context.Canceled {
 		return agentErr
 	}
 	return err
@@ -475,16 +504,13 @@ waitPeer:
 	default:
 	}
 
-	secChangeQueue := watch.NewQueue()
-	defer secChangeQueue.Close()
-	secChangesCh, secChangesCancel := secChangeQueue.Watch()
+	secChangesCh, secChangesCancel := securityConfig.Watch()
 	defer secChangesCancel()
-	securityConfig.SetWatch(secChangeQueue)
 
 	rootCA := securityConfig.RootCA()
 	issuer := securityConfig.IssuerInfo()
 
-	a, err := agent.New(&agent.Config{
+	agentConfig := &agent.Config{
 		Hostname:         n.config.Hostname,
 		ConnBroker:       n.connBroker,
 		Executor:         n.config.Executor,
@@ -497,7 +523,14 @@ waitPeer:
 			CertIssuerPublicKey: issuer.PublicKey,
 			CertIssuerSubject:   issuer.Subject,
 		},
-	})
+	}
+	// if a join address has been specified, then if the agent fails to connect due to a TLS error, fail fast - don't
+	// keep re-trying to join
+	if n.config.JoinAddr != "" {
+		agentConfig.SessionTracker = &firstSessionErrorTracker{}
+	}
+
+	a, err := agent.New(agentConfig)
 	if err != nil {
 		return err
 	}
@@ -627,28 +660,31 @@ func (n *Node) Remotes() []api.Peer {
 	return remotes
 }
 
-func (n *Node) loadSecurityConfig(ctx context.Context, paths *ca.SecurityConfigPaths) (*ca.SecurityConfig, error) {
-	var securityConfig *ca.SecurityConfig
+func (n *Node) loadSecurityConfig(ctx context.Context, paths *ca.SecurityConfigPaths) (*ca.SecurityConfig, func() error, error) {
+	var (
+		securityConfig *ca.SecurityConfig
+		cancel         func() error
+	)
 
 	krw := ca.NewKeyReadWriter(paths.Node, n.unlockKey, &manager.RaftDEKData{})
 	if err := krw.Migrate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Check if we already have a valid certificates on disk.
 	rootCA, err := ca.GetLocalRootCA(paths.RootCA)
 	if err != nil && err != ca.ErrNoLocalRootCA {
-		return nil, err
+		return nil, nil, err
 	}
 	if err == nil {
 		// if forcing a new cluster, we allow the certificates to be expired - a new set will be generated
-		securityConfig, err = ca.LoadSecurityConfig(ctx, rootCA, krw, n.config.ForceNewCluster)
+		securityConfig, cancel, err = ca.LoadSecurityConfig(ctx, rootCA, krw, n.config.ForceNewCluster)
 		if err != nil {
 			_, isInvalidKEK := errors.Cause(err).(ca.ErrInvalidKEK)
 			if isInvalidKEK {
-				return nil, ErrInvalidUnlockKey
+				return nil, nil, ErrInvalidUnlockKey
 			} else if !os.IsNotExist(err) {
-				return nil, errors.Wrapf(err, "error while loading TLS certificate in %s", paths.Node.Cert)
+				return nil, nil, errors.Wrapf(err, "error while loading TLS certificate in %s", paths.Node.Cert)
 			}
 		}
 	}
@@ -663,16 +699,16 @@ func (n *Node) loadSecurityConfig(ctx context.Context, paths *ca.SecurityConfigP
 			krw = ca.NewKeyReadWriter(paths.Node, n.unlockKey, &manager.RaftDEKData{})
 			rootCA, err = ca.CreateRootCA(ca.DefaultRootCN)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if err := ca.SaveRootCA(rootCA, paths.RootCA); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			log.G(ctx).Debug("generated CA key and certificate")
 		} else if err == ca.ErrNoLocalRootCA { // from previous error loading the root CA from disk
 			rootCA, err = ca.DownloadRootCA(ctx, paths.RootCA, n.config.JoinToken, n.connBroker)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			log.G(ctx).Debug("downloaded CA certificate")
 		}
@@ -683,25 +719,25 @@ func (n *Node) loadSecurityConfig(ctx context.Context, paths *ca.SecurityConfigP
 		// - We wait for CreateSecurityConfig to finish since we need a certificate to operate.
 
 		// Attempt to load certificate from disk
-		securityConfig, err = ca.LoadSecurityConfig(ctx, rootCA, krw, n.config.ForceNewCluster)
+		securityConfig, cancel, err = ca.LoadSecurityConfig(ctx, rootCA, krw, n.config.ForceNewCluster)
 		if err == nil {
 			log.G(ctx).WithFields(logrus.Fields{
 				"node.id": securityConfig.ClientTLSCreds.NodeID(),
 			}).Debugf("loaded TLS certificate")
 		} else {
 			if _, ok := errors.Cause(err).(ca.ErrInvalidKEK); ok {
-				return nil, ErrInvalidUnlockKey
+				return nil, nil, ErrInvalidUnlockKey
 			}
 			log.G(ctx).WithError(err).Debugf("no node credentials found in: %s", krw.Target())
 
-			securityConfig, err = rootCA.CreateSecurityConfig(ctx, krw, ca.CertificateRequestConfig{
+			securityConfig, cancel, err = rootCA.CreateSecurityConfig(ctx, krw, ca.CertificateRequestConfig{
 				Token:        n.config.JoinToken,
 				Availability: n.config.Availability,
 				ConnBroker:   n.connBroker,
 			})
 
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 	}
@@ -712,7 +748,7 @@ func (n *Node) loadSecurityConfig(ctx context.Context, paths *ca.SecurityConfigP
 	n.roleCond.Broadcast()
 	n.Unlock()
 
-	return securityConfig, nil
+	return securityConfig, cancel, nil
 }
 
 func (n *Node) initManagerConnection(ctx context.Context, ready chan<- struct{}) error {
@@ -787,14 +823,22 @@ func (n *Node) runManager(ctx context.Context, securityConfig *ca.SecurityConfig
 		}
 	}
 
-	remoteAddr, _ := n.remotes.Select(n.NodeID())
+	joinAddr := n.config.JoinAddr
+	if joinAddr == "" {
+		remoteAddr, err := n.remotes.Select(n.NodeID())
+		if err == nil {
+			joinAddr = remoteAddr.Addr
+		}
+	}
+
 	m, err := manager.New(&manager.Config{
 		ForceNewCluster:  n.config.ForceNewCluster,
 		RemoteAPI:        remoteAPI,
 		ControlAPI:       n.config.ListenControlAPI,
 		SecurityConfig:   securityConfig,
 		ExternalCAs:      n.config.ExternalCAs,
-		JoinRaft:         remoteAddr.Addr,
+		JoinRaft:         joinAddr,
+		ForceJoin:        n.config.JoinAddr != "",
 		StateDir:         n.config.StateDir,
 		HeartbeatTick:    n.config.HeartbeatTick,
 		ElectionTick:     n.config.ElectionTick,
@@ -1023,3 +1067,37 @@ func (sp sortablePeers) Less(i, j int) bool { return sp[i].NodeID < sp[j].NodeID
 func (sp sortablePeers) Len() int { return len(sp) }
 
 func (sp sortablePeers) Swap(i, j int) { sp[i], sp[j] = sp[j], sp[i] }
+
+// firstSessionErrorTracker is a utility that helps determine whether the agent should exit after
+// a TLS failure on establishing the first session.  This should only happen if a join address
+// is specified.  If establishing the first session succeeds, but later on some session fails
+// because of a TLS error, we don't want to exit the agent because a previously successful
+// session indicates that the TLS error may be a transient issue.
+type firstSessionErrorTracker struct {
+	mu               sync.Mutex
+	pastFirstSession bool
+	err              error
+}
+
+func (fs *firstSessionErrorTracker) SessionEstablished() {
+	fs.mu.Lock()
+	fs.pastFirstSession = true
+	fs.mu.Unlock()
+}
+
+func (fs *firstSessionErrorTracker) SessionError(err error) {
+	fs.mu.Lock()
+	fs.err = err
+	fs.mu.Unlock()
+}
+
+func (fs *firstSessionErrorTracker) SessionClosed() error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	// unfortunately grpc connection errors are type grpc.rpcError, which are not exposed, and we can't get at the underlying error type
+	if !fs.pastFirstSession && grpc.Code(fs.err) == codes.Internal &&
+		strings.HasPrefix(grpc.ErrorDesc(fs.err), "connection error") && strings.Contains(grpc.ErrorDesc(fs.err), "transport: x509:") {
+		return fs.err
+	}
+	return nil
+}

@@ -7,7 +7,6 @@ import (
 	"net"
 	"sync"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/libnetwork/datastore"
 	"github.com/docker/libnetwork/discoverapi"
 	"github.com/docker/libnetwork/driverapi"
@@ -16,6 +15,7 @@ import (
 	"github.com/docker/libnetwork/osl"
 	"github.com/docker/libnetwork/types"
 	"github.com/hashicorp/serf/serf"
+	"github.com/sirupsen/logrus"
 )
 
 // XXX OVERLAY_SOLARIS
@@ -57,7 +57,8 @@ type driver struct {
 // Init registers a new instance of overlay driver
 func Init(dc driverapi.DriverCallback, config map[string]interface{}) error {
 	c := driverapi.Capability{
-		DataScope: datastore.GlobalScope,
+		DataScope:         datastore.GlobalScope,
+		ConnectivityScope: datastore.GlobalScope,
 	}
 	d := &driver{
 		networks: networkTable{},
@@ -140,7 +141,7 @@ func (d *driver) restoreEndpoints() error {
 		Ifaces := make(map[string][]osl.IfaceOption)
 		vethIfaceOption := make([]osl.IfaceOption, 1)
 		vethIfaceOption = append(vethIfaceOption, n.sbox.InterfaceOptions().Master(s.brName))
-		Ifaces[fmt.Sprintf("%s+%s", "veth", "veth")] = vethIfaceOption
+		Ifaces["veth+veth"] = vethIfaceOption
 
 		err := n.sbox.Restore(Ifaces, nil, nil, nil)
 		if err != nil {
@@ -233,7 +234,7 @@ func (d *driver) nodeJoin(advertiseAddress, bindAddress string, self bool) {
 		// If there is no cluster store there is no need to start serf.
 		if d.store != nil {
 			if err := validateSelf(advertiseAddress); err != nil {
-				logrus.Warnf("%s", err.Error())
+				logrus.Warn(err.Error())
 			}
 			err := d.serfInit()
 			if err != nil {

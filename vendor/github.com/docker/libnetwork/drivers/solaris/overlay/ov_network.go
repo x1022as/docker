@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/libnetwork/datastore"
 	"github.com/docker/libnetwork/driverapi"
 	"github.com/docker/libnetwork/netlabel"
@@ -18,6 +17,7 @@ import (
 	"github.com/docker/libnetwork/osl"
 	"github.com/docker/libnetwork/resolvconf"
 	"github.com/docker/libnetwork/types"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -331,7 +331,7 @@ func (n *network) restoreSubnetSandbox(s *subnet, brName, vxlanName string) erro
 	brIfaceOption := make([]osl.IfaceOption, 2)
 	brIfaceOption = append(brIfaceOption, sbox.InterfaceOptions().Address(s.gwIP))
 	brIfaceOption = append(brIfaceOption, sbox.InterfaceOptions().Bridge(true))
-	Ifaces[fmt.Sprintf("%s+%s", brName, "br")] = brIfaceOption
+	Ifaces[brName+"+br"] = brIfaceOption
 
 	err := sbox.Restore(Ifaces, nil, nil, nil)
 	if err != nil {
@@ -341,7 +341,7 @@ func (n *network) restoreSubnetSandbox(s *subnet, brName, vxlanName string) erro
 	Ifaces = make(map[string][]osl.IfaceOption)
 	vxlanIfaceOption := make([]osl.IfaceOption, 1)
 	vxlanIfaceOption = append(vxlanIfaceOption, sbox.InterfaceOptions().Master(brName))
-	Ifaces[fmt.Sprintf("%s+%s", vxlanName, "vxlan")] = vxlanIfaceOption
+	Ifaces[vxlanName+"+vxlan"] = vxlanIfaceOption
 	err = sbox.Restore(Ifaces, nil, nil, nil)
 	if err != nil {
 		return err
@@ -457,7 +457,7 @@ func (n *network) initSandbox(restore bool) error {
 	// In the restore case network sandbox already exist; but we don't know
 	// what epoch number it was created with. It has to be retrieved by
 	// searching the net namespaces.
-	key := ""
+	var key string
 	if restore {
 		key = osl.GenerateKey("-" + n.id)
 	} else {
@@ -570,15 +570,10 @@ func (n *network) Value() []byte {
 		netJSON = append(netJSON, sj)
 	}
 
-	b, err := json.Marshal(netJSON)
-	if err != nil {
-		return []byte{}
-	}
-
 	m["secure"] = n.secure
 	m["subnets"] = netJSON
 	m["mtu"] = n.mtu
-	b, err = json.Marshal(m)
+	b, err := json.Marshal(m)
 	if err != nil {
 		return []byte{}
 	}
@@ -723,7 +718,7 @@ func (n *network) obtainVxlanID(s *subnet) error {
 		}
 
 		if s.vni == 0 {
-			vxlanID, err := n.driver.vxlanIdm.GetID()
+			vxlanID, err := n.driver.vxlanIdm.GetID(true)
 			if err != nil {
 				return fmt.Errorf("failed to allocate vxlan id: %v", err)
 			}

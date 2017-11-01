@@ -47,19 +47,25 @@ struct fsxattr {
 #ifndef Q_XGETPQUOTA
 #define Q_XGETPQUOTA QCMD(Q_XGETQUOTA, PRJQUOTA)
 #endif
+
+const int Q_XGETQSTAT_PRJQUOTA = QCMD(Q_XGETQSTAT, PRJQUOTA);
 */
 import "C"
 import (
 	"fmt"
 	"io/ioutil"
-	"os"
 	"path"
 	"path/filepath"
-	"syscall"
 	"unsafe"
 
-	"github.com/Sirupsen/logrus"
+	"errors"
+
+	"github.com/sirupsen/logrus"
+	"golang.org/x/sys/unix"
 )
+
+// ErrQuotaNotSupported indicates if were found the FS does not have projects quotas available
+var ErrQuotaNotSupported = errors.New("Filesystem does not support or has not enabled quotas")
 
 // Quota limit params - currently we only control blocks hard limit
 type Quota struct {
@@ -98,6 +104,24 @@ type Control struct {
 //
 func NewControl(basePath string) (*Control, error) {
 	//
+	// create backing filesystem device node
+	//
+	backingFsBlockDev, err := makeBackingFsDev(basePath)
+	if err != nil {
+		return nil, err
+	}
+
+	// check if we can call quotactl with project quotas
+	// as a mechanism to determine (early) if we have support
+	hasQuotaSupport, err := hasQuotaSupport(backingFsBlockDev)
+	if err != nil {
+		return nil, err
+	}
+	if !hasQuotaSupport {
+		return nil, ErrQuotaNotSupported
+	}
+
+	//
 	// Get project id of parent dir as minimal id to be used by driver
 	//
 	minProjectID, err := getProjectID(basePath)
@@ -105,14 +129,6 @@ func NewControl(basePath string) (*Control, error) {
 		return nil, err
 	}
 	minProjectID++
-
-	//
-	// create backing filesystem device node
-	//
-	backingFsBlockDev, err := makeBackingFsDev(basePath)
-	if err != nil {
-		return nil, err
-	}
 
 	//
 	// Test if filesystem supports project quotas by trying to set
@@ -184,7 +200,7 @@ func setProjectQuota(backingFsBlockDev string, projectID uint32, quota Quota) er
 	var cs = C.CString(backingFsBlockDev)
 	defer C.free(unsafe.Pointer(cs))
 
-	_, _, errno := syscall.Syscall6(syscall.SYS_QUOTACTL, C.Q_XSETPQLIM,
+	_, _, errno := unix.Syscall6(unix.SYS_QUOTACTL, C.Q_XSETPQLIM,
 		uintptr(unsafe.Pointer(cs)), uintptr(d.d_id),
 		uintptr(unsafe.Pointer(&d)), 0, 0)
 	if errno != 0 {
@@ -211,7 +227,7 @@ func (q *Control) GetQuota(targetPath string, quota *Quota) error {
 	var cs = C.CString(q.backingFsBlockDev)
 	defer C.free(unsafe.Pointer(cs))
 
-	_, _, errno := syscall.Syscall6(syscall.SYS_QUOTACTL, C.Q_XGETPQUOTA,
+	_, _, errno := unix.Syscall6(unix.SYS_QUOTACTL, C.Q_XGETPQUOTA,
 		uintptr(unsafe.Pointer(cs)), uintptr(C.__u32(projectID)),
 		uintptr(unsafe.Pointer(&d)), 0, 0)
 	if errno != 0 {
@@ -232,7 +248,7 @@ func getProjectID(targetPath string) (uint32, error) {
 	defer closeDir(dir)
 
 	var fsx C.struct_fsxattr
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, getDirFd(dir), C.FS_IOC_FSGETXATTR,
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, getDirFd(dir), C.FS_IOC_FSGETXATTR,
 		uintptr(unsafe.Pointer(&fsx)))
 	if errno != 0 {
 		return 0, fmt.Errorf("Failed to get projid for %s: %v", targetPath, errno.Error())
@@ -250,14 +266,14 @@ func setProjectID(targetPath string, projectID uint32) error {
 	defer closeDir(dir)
 
 	var fsx C.struct_fsxattr
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, getDirFd(dir), C.FS_IOC_FSGETXATTR,
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, getDirFd(dir), C.FS_IOC_FSGETXATTR,
 		uintptr(unsafe.Pointer(&fsx)))
 	if errno != 0 {
 		return fmt.Errorf("Failed to get projid for %s: %v", targetPath, errno.Error())
 	}
 	fsx.fsx_projid = C.__u32(projectID)
 	fsx.fsx_xflags |= C.FS_XFLAG_PROJINHERIT
-	_, _, errno = syscall.Syscall(syscall.SYS_IOCTL, getDirFd(dir), C.FS_IOC_FSSETXATTR,
+	_, _, errno = unix.Syscall(unix.SYS_IOCTL, getDirFd(dir), C.FS_IOC_FSSETXATTR,
 		uintptr(unsafe.Pointer(&fsx)))
 	if errno != 0 {
 		return fmt.Errorf("Failed to set projid for %s: %v", targetPath, errno.Error())
@@ -322,18 +338,37 @@ func getDirFd(dir *C.DIR) uintptr {
 // and create a block device node under the home directory
 // to be used by quotactl commands
 func makeBackingFsDev(home string) (string, error) {
-	fileinfo, err := os.Stat(home)
-	if err != nil {
+	var stat unix.Stat_t
+	if err := unix.Stat(home, &stat); err != nil {
 		return "", err
 	}
 
 	backingFsBlockDev := path.Join(home, "backingFsBlockDev")
-	// Re-create just in case comeone copied the home directory over to a new device
-	syscall.Unlink(backingFsBlockDev)
-	stat := fileinfo.Sys().(*syscall.Stat_t)
-	if err := syscall.Mknod(backingFsBlockDev, syscall.S_IFBLK|0600, int(stat.Dev)); err != nil {
+	// Re-create just in case someone copied the home directory over to a new device
+	unix.Unlink(backingFsBlockDev)
+	if err := unix.Mknod(backingFsBlockDev, unix.S_IFBLK|0600, int(stat.Dev)); err != nil {
 		return "", fmt.Errorf("Failed to mknod %s: %v", backingFsBlockDev, err)
 	}
 
 	return backingFsBlockDev, nil
+}
+
+func hasQuotaSupport(backingFsBlockDev string) (bool, error) {
+	var cs = C.CString(backingFsBlockDev)
+	defer free(cs)
+	var qstat C.fs_quota_stat_t
+
+	_, _, errno := unix.Syscall6(unix.SYS_QUOTACTL, uintptr(C.Q_XGETQSTAT_PRJQUOTA), uintptr(unsafe.Pointer(cs)), 0, uintptr(unsafe.Pointer(&qstat)), 0, 0)
+	if errno == 0 && qstat.qs_flags&C.FS_QUOTA_PDQ_ENFD > 0 && qstat.qs_flags&C.FS_QUOTA_PDQ_ACCT > 0 {
+		return true, nil
+	}
+
+	switch errno {
+	// These are the known fatal errors, consider all other errors (ENOTTY, etc.. not supporting quota)
+	case unix.EFAULT, unix.ENOENT, unix.ENOTBLK, unix.EPERM:
+	default:
+		return false, nil
+	}
+
+	return false, errno
 }

@@ -12,7 +12,6 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/Sirupsen/logrus"
 	"github.com/docker/libnetwork/datastore"
 	"github.com/docker/libnetwork/discoverapi"
 	"github.com/docker/libnetwork/driverapi"
@@ -24,6 +23,7 @@ import (
 	"github.com/docker/libnetwork/osl"
 	"github.com/docker/libnetwork/portmapper"
 	"github.com/docker/libnetwork/types"
+	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 )
 
@@ -153,7 +153,8 @@ func Init(dc driverapi.DriverCallback, config map[string]interface{}) error {
 	}
 
 	c := driverapi.Capability{
-		DataScope: datastore.LocalScope,
+		DataScope:         datastore.LocalScope,
+		ConnectivityScope: datastore.LocalScope,
 	}
 	return dc.RegisterDriver(networkType, d, c)
 }
@@ -762,11 +763,7 @@ func (d *driver) createNetwork(config *networkConfiguration) error {
 
 	// Apply the prepared list of steps, and abort at the first error.
 	bridgeSetup.queueStep(setupDeviceUp)
-	if err = bridgeSetup.apply(); err != nil {
-		return err
-	}
-
-	return nil
+	return bridgeSetup.apply()
 }
 
 func (d *driver) DeleteNetwork(nid string) error {

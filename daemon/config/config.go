@@ -7,18 +7,19 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
 	"sync"
 
-	"github.com/Sirupsen/logrus"
 	daemondiscovery "github.com/docker/docker/daemon/discovery"
 	"github.com/docker/docker/opts"
 	"github.com/docker/docker/pkg/authorization"
 	"github.com/docker/docker/pkg/discovery"
 	"github.com/docker/docker/registry"
 	"github.com/imdario/mergo"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/pflag"
 )
 
@@ -101,10 +102,15 @@ type CommonConfig struct {
 	RawLogs              bool                      `json:"raw-logs,omitempty"`
 	RootDeprecated       string                    `json:"graph,omitempty"`
 	Root                 string                    `json:"data-root,omitempty"`
+	ExecRoot             string                    `json:"exec-root,omitempty"`
 	SocketGroup          string                    `json:"group,omitempty"`
-	TrustKeyPath         string                    `json:"-"`
 	CorsHeaders          string                    `json:"api-cors-header,omitempty"`
-	EnableCors           bool                      `json:"api-enable-cors,omitempty"`
+
+	// TrustKeyPath is used to generate the daemon ID and for signing schema 1 manifests
+	// when pushing to a registry which does not support schema 2. This field is marked as
+	// deprecated because schema 1 manifests are deprecated in favor of schema 2 and the
+	// daemon ID will use a dedicated identifier not shared with exported signatures.
+	TrustKeyPath string `json:"deprecated-key-path,omitempty"`
 
 	// LiveRestoreEnabled determines whether we should keep containers
 	// alive upon daemon shutdown/start
@@ -163,6 +169,15 @@ type CommonConfig struct {
 	ValuesSet map[string]interface{}
 
 	Experimental bool `json:"experimental"` // Experimental indicates whether experimental features should be exposed or not
+
+	// Exposed node Generic Resources
+	NodeGenericResources string `json:"node-generic-resources,omitempty"`
+	// NetworkControlPlaneMTU allows to specify the control plane MTU, this will allow to optimize the network use in some components
+	NetworkControlPlaneMTU int `json:"network-control-plane-mtu,omitempty"`
+
+	// ContainerAddr is the address used to connect to containerd if we're
+	// not starting it ourselves
+	ContainerdAddr string `json:"containerd,omitempty"`
 }
 
 // IsValueSet returns true if a configuration value
@@ -189,9 +204,6 @@ func New() *Config {
 
 // ParseClusterAdvertiseSettings parses the specified advertise settings
 func ParseClusterAdvertiseSettings(clusterStore, clusterAdvertise string) (string, error) {
-	if runtime.GOOS == "solaris" && (clusterAdvertise != "" || clusterStore != "") {
-		return "", errors.New("Cluster Advertise Settings not supported on Solaris")
-	}
 	if clusterAdvertise == "" {
 		return "", daemondiscovery.ErrDiscoveryDisabled
 	}
@@ -235,7 +247,10 @@ func Reload(configFile string, flags *pflag.FlagSet, reload func(*Config)) error
 	logrus.Infof("Got signal to reload configuration, reloading from: %s", configFile)
 	newConfig, err := getConflictFreeConfiguration(configFile, flags)
 	if err != nil {
-		return err
+		if flags.Changed("config-file") || !os.IsNotExist(err) {
+			return fmt.Errorf("unable to configure the Docker daemon with file %s: %v", configFile, err)
+		}
+		newConfig = New()
 	}
 
 	if err := Validate(newConfig); err != nil {
@@ -492,11 +507,20 @@ func Validate(config *Config) error {
 		}
 	}
 
+	if _, err := ParseGenericResources(config.NodeGenericResources); err != nil {
+		return err
+	}
+
 	if defaultRuntime := config.GetDefaultRuntimeName(); defaultRuntime != "" && defaultRuntime != StockRuntimeName {
 		runtimes := config.GetAllRuntimes()
 		if _, ok := runtimes[defaultRuntime]; !ok {
 			return fmt.Errorf("specified default runtime '%s' does not exist", defaultRuntime)
 		}
+	}
+
+	// validate platform-specific settings
+	if err := config.ValidatePlatformConfig(); err != nil {
+		return err
 	}
 
 	return nil
