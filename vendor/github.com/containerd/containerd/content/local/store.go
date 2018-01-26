@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,13 +21,25 @@ import (
 	"github.com/pkg/errors"
 )
 
-var (
-	bufPool = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 1<<20)
-		},
-	}
-)
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		buffer := make([]byte, 1<<20)
+		return &buffer
+	},
+}
+
+// LabelStore is used to store mutable labels for digests
+type LabelStore interface {
+	// Get returns all the labels for the given digest
+	Get(digest.Digest) (map[string]string, error)
+
+	// Set sets all the labels for a given digest
+	Set(digest.Digest, map[string]string) error
+
+	// Update replaces the given labels for a digest,
+	// a key with an empty value removes a label.
+	Update(digest.Digest, map[string]string) (map[string]string, error)
+}
 
 // Store is digest-keyed store for content. All data written into the store is
 // stored under a verifiable digest.
@@ -34,16 +48,27 @@ var (
 // including resumable ingest.
 type store struct {
 	root string
+	ls   LabelStore
 }
 
 // NewStore returns a local content store
 func NewStore(root string) (content.Store, error) {
-	if err := os.MkdirAll(filepath.Join(root, "ingest"), 0777); err != nil && !os.IsExist(err) {
+	return NewLabeledStore(root, nil)
+}
+
+// NewLabeledStore returns a new content store using the provided label store
+//
+// Note: content stores which are used underneath a metadata store may not
+// require labels and should use `NewStore`. `NewLabeledStore` is primarily
+// useful for tests or standalone implementations.
+func NewLabeledStore(root string, ls LabelStore) (content.Store, error) {
+	if err := os.MkdirAll(filepath.Join(root, "ingest"), 0777); err != nil {
 		return nil, err
 	}
 
 	return &store{
 		root: root,
+		ls:   ls,
 	}, nil
 }
 
@@ -57,16 +82,23 @@ func (s *store) Info(ctx context.Context, dgst digest.Digest) (content.Info, err
 
 		return content.Info{}, err
 	}
-
-	return s.info(dgst, fi), nil
+	var labels map[string]string
+	if s.ls != nil {
+		labels, err = s.ls.Get(dgst)
+		if err != nil {
+			return content.Info{}, err
+		}
+	}
+	return s.info(dgst, fi, labels), nil
 }
 
-func (s *store) info(dgst digest.Digest, fi os.FileInfo) content.Info {
+func (s *store) info(dgst digest.Digest, fi os.FileInfo, labels map[string]string) content.Info {
 	return content.Info{
 		Digest:    dgst,
 		Size:      fi.Size(),
 		CreatedAt: fi.ModTime(),
-		UpdatedAt: fi.ModTime(),
+		UpdatedAt: getATime(fi),
+		Labels:    labels,
 	}
 }
 
@@ -111,8 +143,66 @@ func (s *store) Delete(ctx context.Context, dgst digest.Digest) error {
 }
 
 func (s *store) Update(ctx context.Context, info content.Info, fieldpaths ...string) (content.Info, error) {
-	// TODO: Support persisting and updating mutable content data
-	return content.Info{}, errors.Wrapf(errdefs.ErrFailedPrecondition, "update not supported on immutable content store")
+	if s.ls == nil {
+		return content.Info{}, errors.Wrapf(errdefs.ErrFailedPrecondition, "update not supported on immutable content store")
+	}
+
+	p := s.blobPath(info.Digest)
+	fi, err := os.Stat(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = errors.Wrapf(errdefs.ErrNotFound, "content %v", info.Digest)
+		}
+
+		return content.Info{}, err
+	}
+
+	var (
+		all    bool
+		labels map[string]string
+	)
+	if len(fieldpaths) > 0 {
+		for _, path := range fieldpaths {
+			if strings.HasPrefix(path, "labels.") {
+				if labels == nil {
+					labels = map[string]string{}
+				}
+
+				key := strings.TrimPrefix(path, "labels.")
+				labels[key] = info.Labels[key]
+				continue
+			}
+
+			switch path {
+			case "labels":
+				all = true
+				labels = info.Labels
+			default:
+				return content.Info{}, errors.Wrapf(errdefs.ErrInvalidArgument, "cannot update %q field on content info %q", path, info.Digest)
+			}
+		}
+	} else {
+		all = true
+		labels = info.Labels
+	}
+
+	if all {
+		err = s.ls.Set(info.Digest, labels)
+	} else {
+		labels, err = s.ls.Update(info.Digest, labels)
+	}
+	if err != nil {
+		return content.Info{}, err
+	}
+
+	info = s.info(info.Digest, fi, labels)
+	info.UpdatedAt = time.Now()
+
+	if err := os.Chtimes(p, info.UpdatedAt, info.CreatedAt); err != nil {
+		log.G(ctx).WithError(err).Warnf("could not change access time for %s", info.Digest)
+	}
+
+	return info, nil
 }
 
 func (s *store) Walk(ctx context.Context, fn content.WalkFunc, filters ...string) error {
@@ -129,7 +219,7 @@ func (s *store) Walk(ctx context.Context, fn content.WalkFunc, filters ...string
 
 		// TODO(stevvooe): There are few more cases with subdirs that should be
 		// handled in case the layout gets corrupted. This isn't strict enough
-		// an may spew bad data.
+		// and may spew bad data.
 
 		if path == root {
 			return nil
@@ -154,7 +244,14 @@ func (s *store) Walk(ctx context.Context, fn content.WalkFunc, filters ...string
 			// store or extra paths not expected previously.
 		}
 
-		return fn(s.info(dgst, fi))
+		var labels map[string]string
+		if s.ls != nil {
+			labels, err = s.ls.Get(dgst)
+			if err != nil {
+				return err
+			}
+		}
+		return fn(s.info(dgst, fi, labels))
 	})
 }
 
@@ -227,12 +324,28 @@ func (s *store) status(ingestPath string) (content.Status, error) {
 		return content.Status{}, err
 	}
 
+	startedAt, err := readFileTimestamp(filepath.Join(ingestPath, "startedat"))
+	if err != nil {
+		return content.Status{}, errors.Wrapf(err, "could not read startedat")
+	}
+
+	updatedAt, err := readFileTimestamp(filepath.Join(ingestPath, "updatedat"))
+	if err != nil {
+		return content.Status{}, errors.Wrapf(err, "could not read updatedat")
+	}
+
+	// because we don't write updatedat on every write, the mod time may
+	// actually be more up to date.
+	if fi.ModTime().After(updatedAt) {
+		updatedAt = fi.ModTime()
+	}
+
 	return content.Status{
 		Ref:       ref,
 		Offset:    fi.Size(),
 		Total:     s.total(ingestPath),
-		UpdatedAt: fi.ModTime(),
-		StartedAt: getStartTime(fi),
+		UpdatedAt: updatedAt,
+		StartedAt: startedAt,
 	}, nil
 }
 
@@ -272,6 +385,37 @@ func (s *store) total(ingestPath string) int64 {
 //
 // The argument `ref` is used to uniquely identify a long-lived writer transaction.
 func (s *store) Writer(ctx context.Context, ref string, total int64, expected digest.Digest) (content.Writer, error) {
+	var lockErr error
+	for count := uint64(0); count < 10; count++ {
+		time.Sleep(time.Millisecond * time.Duration(rand.Intn(1<<count)))
+		if err := tryLock(ref); err != nil {
+			if !errdefs.IsUnavailable(err) {
+				return nil, err
+			}
+
+			lockErr = err
+		} else {
+			lockErr = nil
+			break
+		}
+	}
+
+	if lockErr != nil {
+		return nil, lockErr
+	}
+
+	w, err := s.writer(ctx, ref, total, expected)
+	if err != nil {
+		unlock(ref)
+		return nil, err
+	}
+
+	return w, nil // lock is now held by w.
+}
+
+// writer provides the main implementation of the Writer method. The caller
+// must hold the lock correctly and release on error if there is a problem.
+func (s *store) writer(ctx context.Context, ref string, total int64, expected digest.Digest) (content.Writer, error) {
 	// TODO(stevvooe): Need to actually store expected here. We have
 	// code in the service that shouldn't be dealing with this.
 	if expected != "" {
@@ -282,10 +426,6 @@ func (s *store) Writer(ctx context.Context, ref string, total int64, expected di
 	}
 
 	path, refp, data := s.ingestPaths(ref)
-
-	if err := tryLock(ref); err != nil {
-		return nil, errors.Wrapf(err, "locking ref %v failed", ref)
-	}
 
 	var (
 		digester  = digest.Canonical.Digester()
@@ -315,17 +455,17 @@ func (s *store) Writer(ctx context.Context, ref string, total int64, expected di
 			return nil, errors.Errorf("provided total differs from status: %v != %v", total, status.Total)
 		}
 
-		// slow slow slow!!, send to goroutine or use resumable hashes
+		// TODO(stevvooe): slow slow slow!!, send to goroutine or use resumable hashes
 		fp, err := os.Open(data)
 		if err != nil {
 			return nil, err
 		}
 		defer fp.Close()
 
-		p := bufPool.Get().([]byte)
+		p := bufPool.Get().(*[]byte)
 		defer bufPool.Put(p)
 
-		offset, err = io.CopyBuffer(digester.Hash(), fp, p)
+		offset, err = io.CopyBuffer(digester.Hash(), fp, *p)
 		if err != nil {
 			return nil, err
 		}
@@ -334,9 +474,20 @@ func (s *store) Writer(ctx context.Context, ref string, total int64, expected di
 		startedAt = status.StartedAt
 		total = status.Total
 	} else {
+		startedAt = time.Now()
+		updatedAt = startedAt
+
 		// the ingest is new, we need to setup the target location.
 		// write the ref to a file for later use
 		if err := ioutil.WriteFile(refp, []byte(ref), 0666); err != nil {
+			return nil, err
+		}
+
+		if writeTimestampFile(filepath.Join(path, "startedat"), startedAt); err != nil {
+			return nil, err
+		}
+
+		if writeTimestampFile(filepath.Join(path, "updatedat"), startedAt); err != nil {
 			return nil, err
 		}
 
@@ -345,14 +496,15 @@ func (s *store) Writer(ctx context.Context, ref string, total int64, expected di
 				return nil, err
 			}
 		}
-
-		startedAt = time.Now()
-		updatedAt = startedAt
 	}
 
 	fp, err := os.OpenFile(data, os.O_WRONLY|os.O_CREATE, 0666)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to open data file")
+	}
+
+	if _, err := fp.Seek(offset, io.SeekStart); err != nil {
+		return nil, errors.Wrap(err, "could not seek to current write offset")
 	}
 
 	return &writer{
@@ -411,4 +563,31 @@ func (s *store) ingestPaths(ref string) (string, string, string) {
 func readFileString(path string) (string, error) {
 	p, err := ioutil.ReadFile(path)
 	return string(p), err
+}
+
+// readFileTimestamp reads a file with just a timestamp present.
+func readFileTimestamp(p string) (time.Time, error) {
+	b, err := ioutil.ReadFile(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			err = errors.Wrap(errdefs.ErrNotFound, err.Error())
+		}
+		return time.Time{}, err
+	}
+
+	var t time.Time
+	if err := t.UnmarshalText(b); err != nil {
+		return time.Time{}, errors.Wrapf(err, "could not parse timestamp file %v", p)
+	}
+
+	return t, nil
+}
+
+func writeTimestampFile(p string, t time.Time) error {
+	b, err := t.MarshalText()
+	if err != nil {
+		return err
+	}
+
+	return ioutil.WriteFile(p, b, 0666)
 }

@@ -23,8 +23,8 @@ type Config struct {
 	Metrics MetricsConfig `toml:"metrics"`
 	// Plugins provides plugin specific configuration for the initialization of a plugin
 	Plugins map[string]toml.Primitive `toml:"plugins"`
-	// Enable containerd as a subreaper
-	Subreaper bool `toml:"subreaper"`
+	// NoSubreaper disables containerd as a subreaper
+	NoSubreaper bool `toml:"no_subreaper"`
 	// OOMScore adjust the containerd's oom score
 	OOMScore int `toml:"oom_score"`
 	// Cgroup specifies cgroup information for the containerd daemon process
@@ -33,23 +33,27 @@ type Config struct {
 	md toml.MetaData
 }
 
+// GRPCConfig provides GRPC configuration for the socket
 type GRPCConfig struct {
 	Address string `toml:"address"`
-	Uid     int    `toml:"uid"`
-	Gid     int    `toml:"gid"`
+	UID     int    `toml:"uid"`
+	GID     int    `toml:"gid"`
 }
 
+// Debug provides debug configuration
 type Debug struct {
 	Address string `toml:"address"`
-	Uid     int    `toml:"uid"`
-	Gid     int    `toml:"gid"`
+	UID     int    `toml:"uid"`
+	GID     int    `toml:"gid"`
 	Level   string `toml:"level"`
 }
 
+// MetricsConfig provides metrics configuration
 type MetricsConfig struct {
 	Address string `toml:"address"`
 }
 
+// CgroupConfig provides cgroup configuration
 type CgroupConfig struct {
 	Path string `toml:"path"`
 }

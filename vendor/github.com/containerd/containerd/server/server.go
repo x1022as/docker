@@ -16,17 +16,18 @@ import (
 	eventsapi "github.com/containerd/containerd/api/services/events/v1"
 	images "github.com/containerd/containerd/api/services/images/v1"
 	introspection "github.com/containerd/containerd/api/services/introspection/v1"
+	leasesapi "github.com/containerd/containerd/api/services/leases/v1"
 	namespaces "github.com/containerd/containerd/api/services/namespaces/v1"
-	snapshotapi "github.com/containerd/containerd/api/services/snapshot/v1"
+	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	tasks "github.com/containerd/containerd/api/services/tasks/v1"
 	version "github.com/containerd/containerd/api/services/version/v1"
 	"github.com/containerd/containerd/content"
 	"github.com/containerd/containerd/content/local"
-	"github.com/containerd/containerd/events"
+	"github.com/containerd/containerd/events/exchange"
 	"github.com/containerd/containerd/log"
 	"github.com/containerd/containerd/metadata"
 	"github.com/containerd/containerd/plugin"
-	"github.com/containerd/containerd/snapshot"
+	"github.com/containerd/containerd/snapshots"
 	metrics "github.com/docker/go-metrics"
 	grpc_prometheus "github.com/grpc-ecosystem/go-grpc-prometheus"
 	"github.com/pkg/errors"
@@ -38,12 +39,15 @@ import (
 
 // New creates and initializes a new containerd server
 func New(ctx context.Context, config *Config) (*Server, error) {
-	if config.Root == "" {
+	switch {
+	case config.Root == "":
 		return nil, errors.New("root must be specified")
-	}
-	if config.State == "" {
+	case config.State == "":
 		return nil, errors.New("state must be specified")
+	case config.Root == config.State:
+		return nil, errors.New("root and state must be different paths")
 	}
+
 	if err := os.MkdirAll(config.Root, 0711); err != nil {
 		return nil, err
 	}
@@ -65,7 +69,7 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 		services []plugin.Service
 		s        = &Server{
 			rpc:    rpc,
-			events: events.NewExchange(),
+			events: exchange.NewExchange(),
 		}
 		initialized = plugin.NewPluginSet()
 	)
@@ -122,7 +126,7 @@ func New(ctx context.Context, config *Config) (*Server, error) {
 // Server is the containerd main daemon
 type Server struct {
 	rpc    *grpc.Server
-	events *events.Exchange
+	events *exchange.Exchange
 }
 
 // ServeGRPC provides the containerd grpc APIs on the provided listener
@@ -195,7 +199,7 @@ func loadPlugins(config *Config) ([]*plugin.Registration, error) {
 				return nil, err
 			}
 
-			snapshotters := make(map[string]snapshot.Snapshotter)
+			snapshotters := make(map[string]snapshots.Snapshotter)
 			for name, sn := range snapshottersRaw {
 				sn, err := sn.Instance()
 				if err != nil {
@@ -203,7 +207,7 @@ func loadPlugins(config *Config) ([]*plugin.Registration, error) {
 						Warnf("could not use snapshotter %v in metadata plugin", name)
 					continue
 				}
-				snapshotters[name] = sn.(snapshot.Snapshotter)
+				snapshotters[name] = sn.(snapshots.Snapshotter)
 			}
 
 			path := filepath.Join(ic.Root, "meta.db")
@@ -245,7 +249,7 @@ func interceptor(
 		// No need to change the context
 	case version.VersionServer:
 		ctx = log.WithModule(ctx, "version")
-	case snapshotapi.SnapshotsServer:
+	case snapshotsapi.SnapshotsServer:
 		ctx = log.WithModule(ctx, "snapshot")
 	case diff.DiffServer:
 		ctx = log.WithModule(ctx, "diff")
@@ -255,6 +259,8 @@ func interceptor(
 		ctx = log.WithModule(ctx, "events")
 	case introspection.IntrospectionServer:
 		ctx = log.WithModule(ctx, "introspection")
+	case leasesapi.LeasesServer:
+		ctx = log.WithModule(ctx, "leases")
 	default:
 		log.G(ctx).Warnf("unknown GRPC server type: %#v\n", info.Server)
 	}

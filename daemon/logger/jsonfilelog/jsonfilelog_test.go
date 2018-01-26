@@ -14,6 +14,7 @@ import (
 	"github.com/docker/docker/daemon/logger"
 	"github.com/docker/docker/daemon/logger/jsonfilelog/jsonlog"
 	"github.com/gotestyourself/gotestyourself/fs"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -57,6 +58,46 @@ func TestJSONFileLogger(t *testing.T) {
 	}
 }
 
+func TestJSONFileLoggerWithTags(t *testing.T) {
+	cid := "a7317399f3f857173c6179d44823594f8294678dea9999662e5c625b5a1c7657"
+	cname := "test-container"
+	tmp, err := ioutil.TempDir("", "docker-logger-")
+
+	require.NoError(t, err)
+
+	defer os.RemoveAll(tmp)
+	filename := filepath.Join(tmp, "container.log")
+	l, err := New(logger.Info{
+		Config: map[string]string{
+			"tag": "{{.ID}}/{{.Name}}", // first 12 characters of ContainerID and full ContainerName
+		},
+		ContainerID:   cid,
+		ContainerName: cname,
+		LogPath:       filename,
+	})
+
+	require.NoError(t, err)
+	defer l.Close()
+
+	err = l.Log(&logger.Message{Line: []byte("line1"), Source: "src1"})
+	require.NoError(t, err)
+
+	err = l.Log(&logger.Message{Line: []byte("line2"), Source: "src2"})
+	require.NoError(t, err)
+
+	err = l.Log(&logger.Message{Line: []byte("line3"), Source: "src3"})
+	require.NoError(t, err)
+
+	res, err := ioutil.ReadFile(filename)
+	require.NoError(t, err)
+
+	expected := `{"log":"line1\n","stream":"src1","attrs":{"tag":"a7317399f3f8/test-container"},"time":"0001-01-01T00:00:00Z"}
+{"log":"line2\n","stream":"src2","attrs":{"tag":"a7317399f3f8/test-container"},"time":"0001-01-01T00:00:00Z"}
+{"log":"line3\n","stream":"src3","attrs":{"tag":"a7317399f3f8/test-container"},"time":"0001-01-01T00:00:00Z"}
+`
+	assert.Equal(t, expected, string(res))
+}
+
 func BenchmarkJSONFileLoggerLog(b *testing.B) {
 	tmp := fs.NewDir(b, "bench-jsonfilelog")
 	defer tmp.Remove()
@@ -82,7 +123,7 @@ func BenchmarkJSONFileLoggerLog(b *testing.B) {
 	}
 
 	buf := bytes.NewBuffer(nil)
-	require.NoError(b, marshalMessage(msg, jsonlogger.(*JSONFileLogger).extra, buf))
+	require.NoError(b, marshalMessage(msg, nil, buf))
 	b.SetBytes(int64(buf.Len()))
 
 	b.ResetTimer()

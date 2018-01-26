@@ -8,8 +8,10 @@ import (
 	"strings"
 
 	"github.com/containerd/containerd"
+	"github.com/containerd/containerd/cio"
 	"github.com/docker/docker/pkg/idtools"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/sirupsen/logrus"
 )
 
 func summaryFromInterface(i interface{}) (*Summary, error) {
@@ -78,19 +80,29 @@ func prepareBundleDir(bundleDir string, ociSpec *specs.Spec) (string, error) {
 	return p, nil
 }
 
-func newFIFOSet(bundleDir, containerID, processID string, withStdin, withTerminal bool) *containerd.FIFOSet {
-	fifos := &containerd.FIFOSet{
+func newFIFOSet(bundleDir, processID string, withStdin, withTerminal bool) *cio.FIFOSet {
+	config := cio.Config{
 		Terminal: withTerminal,
-		Out:      filepath.Join(bundleDir, processID+"-stdout"),
+		Stdout:   filepath.Join(bundleDir, processID+"-stdout"),
 	}
+	paths := []string{config.Stdout}
 
 	if withStdin {
-		fifos.In = filepath.Join(bundleDir, processID+"-stdin")
+		config.Stdin = filepath.Join(bundleDir, processID+"-stdin")
+		paths = append(paths, config.Stdin)
+	}
+	if !withTerminal {
+		config.Stderr = filepath.Join(bundleDir, processID+"-stderr")
+		paths = append(paths, config.Stderr)
+	}
+	closer := func() error {
+		for _, path := range paths {
+			if err := os.RemoveAll(path); err != nil {
+				logrus.Warnf("libcontainerd: failed to remove fifo %v: %v", path, err)
+			}
+		}
+		return nil
 	}
 
-	if !fifos.Terminal {
-		fifos.Err = filepath.Join(bundleDir, processID+"-stderr")
-	}
-
-	return fifos
+	return cio.NewFIFOSet(config, closer)
 }

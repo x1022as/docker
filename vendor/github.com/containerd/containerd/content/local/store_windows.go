@@ -5,6 +5,6 @@ import (
 	"time"
 )
 
-func getStartTime(fi os.FileInfo) time.Time {
+func getATime(fi os.FileInfo) time.Time {
 	return fi.ModTime()
 }

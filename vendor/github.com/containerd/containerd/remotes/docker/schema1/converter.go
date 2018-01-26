@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
@@ -27,10 +28,6 @@ import (
 )
 
 const manifestSizeLimit = 8e6 // 8MB
-
-var (
-	mediaTypeManifest = "application/vnd.docker.distribution.manifest.v1+json"
-)
 
 type blobState struct {
 	diffID digest.Digest
@@ -86,6 +83,7 @@ func (c *Converter) Handle(ctx context.Context, desc ocispec.Descriptor) ([]ocis
 						{
 							MediaType: images.MediaTypeDockerSchema2LayerGzip,
 							Digest:    c.pulledManifest.FSLayers[i].BlobSum,
+							Size:      -1,
 						},
 					}, descs...)
 				}
@@ -159,7 +157,6 @@ func (c *Converter) Convert(ctx context.Context) (ocispec.Descriptor, error) {
 	}
 
 	labels := map[string]string{}
-	labels["containerd.io/gc.root"] = time.Now().UTC().Format(time.RFC3339)
 	labels["containerd.io/gc.ref.content.0"] = manifest.Config.Digest.String()
 	for i, ch := range manifest.Layers {
 		labels[fmt.Sprintf("containerd.io/gc.ref.content.%d", i+1)] = ch.Digest.String()
@@ -173,12 +170,6 @@ func (c *Converter) Convert(ctx context.Context) (ocispec.Descriptor, error) {
 	ref = remotes.MakeRefKey(ctx, config)
 	if err := content.WriteBlob(ctx, c.contentStore, ref, bytes.NewReader(b), config.Size, config.Digest); err != nil {
 		return ocispec.Descriptor{}, errors.Wrap(err, "failed to write config")
-	}
-
-	for _, ch := range manifest.Layers {
-		if _, err := c.contentStore.Update(ctx, content.Info{Digest: ch.Digest}, "labels.containerd.io/gc.root"); err != nil {
-			return ocispec.Descriptor{}, errors.Wrap(err, "failed to remove blob root tag")
-		}
 	}
 
 	return desc, nil
@@ -215,13 +206,32 @@ func (c *Converter) fetchManifest(ctx context.Context, desc ocispec.Descriptor) 
 func (c *Converter) fetchBlob(ctx context.Context, desc ocispec.Descriptor) error {
 	log.G(ctx).Debug("fetch blob")
 
-	ref := remotes.MakeRefKey(ctx, desc)
+	var (
+		ref   = remotes.MakeRefKey(ctx, desc)
+		calc  = newBlobStateCalculator()
+		retry = 16
+		size  = desc.Size
+	)
 
-	calc := newBlobStateCalculator()
+	// size may be unknown, set to zero for content ingest
+	if size == -1 {
+		size = 0
+	}
 
-	cw, err := c.contentStore.Writer(ctx, ref, desc.Size, desc.Digest)
+tryit:
+	cw, err := c.contentStore.Writer(ctx, ref, size, desc.Digest)
 	if err != nil {
-		if !errdefs.IsAlreadyExists(err) {
+		if errdefs.IsUnavailable(err) {
+			select {
+			case <-time.After(time.Millisecond * time.Duration(rand.Intn(retry))):
+				if retry < 2048 {
+					retry = retry << 1
+				}
+				goto tryit
+			case <-ctx.Done():
+				return err
+			}
+		} else if !errdefs.IsAlreadyExists(err) {
 			return err
 		}
 
@@ -270,10 +280,8 @@ func (c *Converter) fetchBlob(ctx context.Context, desc ocispec.Descriptor) erro
 
 		eg.Go(func() error {
 			defer pw.Close()
-			opt := content.WithLabels(map[string]string{
-				"containerd.io/gc.root": time.Now().UTC().Format(time.RFC3339),
-			})
-			return content.Copy(ctx, cw, io.TeeReader(rc, pw), desc.Size, desc.Digest, opt)
+
+			return content.Copy(ctx, cw, io.TeeReader(rc, pw), size, desc.Digest)
 		})
 
 		if err := eg.Wait(); err != nil {
@@ -281,7 +289,7 @@ func (c *Converter) fetchBlob(ctx context.Context, desc ocispec.Descriptor) erro
 		}
 	}
 
-	if desc.Size == 0 {
+	if desc.Size == -1 {
 		info, err := c.contentStore.Info(ctx, desc.Digest)
 		if err != nil {
 			return errors.Wrap(err, "failed to get blob info")

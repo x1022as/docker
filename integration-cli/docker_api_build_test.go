@@ -30,7 +30,7 @@ func (s *DockerSuite) TestBuildAPIDockerFileRemote(c *check.C) {
 	testRequires(c, NotUserNamespace)
 
 	var testD string
-	if testEnv.DaemonPlatform() == "windows" {
+	if testEnv.OSType == "windows" {
 		testD = `FROM busybox
 RUN find / -name ba*
 RUN find /tmp/`
@@ -460,6 +460,7 @@ COPY file /file`
 		assert.Equal(c, http.StatusOK, res.StatusCode)
 
 		out, err := request.ReadBody(body)
+		require.NoError(c, err)
 
 		ids := getImageIDsFromBuild(c, out)
 		return ids[len(ids)-1]
@@ -498,6 +499,7 @@ ADD file /file`
 		assert.Equal(c, http.StatusOK, res.StatusCode)
 
 		out, err := request.ReadBody(body)
+		require.NoError(c, err)
 
 		ids := getImageIDsFromBuild(c, out)
 		return ids[len(ids)-1]
@@ -617,6 +619,28 @@ func testBuildWithSession(c *check.C, dir, dockerfile string) (outStr string) {
 	err = g.Wait()
 	assert.Nil(c, err)
 	return
+}
+
+func (s *DockerSuite) TestBuildScratchCopy(c *check.C) {
+	testRequires(c, DaemonIsLinux)
+	dockerfile := `FROM scratch
+ADD Dockerfile /
+ENV foo bar`
+	ctx := fakecontext.New(c, "",
+		fakecontext.WithDockerfile(dockerfile),
+	)
+	defer ctx.Close()
+
+	res, body, err := request.Post(
+		"/build",
+		request.RawContent(ctx.AsTarReader(c)),
+		request.ContentType("application/x-tar"))
+	c.Assert(err, checker.IsNil)
+	c.Assert(res.StatusCode, checker.Equals, http.StatusOK)
+
+	out, err := request.ReadBody(body)
+	require.NoError(c, err)
+	assert.Contains(c, string(out), "Successfully built")
 }
 
 type buildLine struct {

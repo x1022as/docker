@@ -1,4 +1,4 @@
-// +build linux freebsd solaris
+// +build linux freebsd
 
 package container
 
@@ -65,12 +65,11 @@ func (container *Container) NetworkMounts() []Mount {
 		if _, err := os.Stat(container.ResolvConfPath); err != nil {
 			logrus.Warnf("ResolvConfPath set to %q, but can't stat this filename (err = %v); skipping", container.ResolvConfPath, err)
 		} else {
-			if !container.HasMountFor("/etc/resolv.conf") {
-				label.Relabel(container.ResolvConfPath, container.MountLabel, shared)
-			}
 			writable := !container.HostConfig.ReadonlyRootfs
 			if m, exists := container.MountPoints["/etc/resolv.conf"]; exists {
 				writable = m.RW
+			} else {
+				label.Relabel(container.ResolvConfPath, container.MountLabel, shared)
 			}
 			mounts = append(mounts, Mount{
 				Source:      container.ResolvConfPath,
@@ -84,12 +83,11 @@ func (container *Container) NetworkMounts() []Mount {
 		if _, err := os.Stat(container.HostnamePath); err != nil {
 			logrus.Warnf("HostnamePath set to %q, but can't stat this filename (err = %v); skipping", container.HostnamePath, err)
 		} else {
-			if !container.HasMountFor("/etc/hostname") {
-				label.Relabel(container.HostnamePath, container.MountLabel, shared)
-			}
 			writable := !container.HostConfig.ReadonlyRootfs
 			if m, exists := container.MountPoints["/etc/hostname"]; exists {
 				writable = m.RW
+			} else {
+				label.Relabel(container.HostnamePath, container.MountLabel, shared)
 			}
 			mounts = append(mounts, Mount{
 				Source:      container.HostnamePath,
@@ -103,12 +101,11 @@ func (container *Container) NetworkMounts() []Mount {
 		if _, err := os.Stat(container.HostsPath); err != nil {
 			logrus.Warnf("HostsPath set to %q, but can't stat this filename (err = %v); skipping", container.HostsPath, err)
 		} else {
-			if !container.HasMountFor("/etc/hosts") {
-				label.Relabel(container.HostsPath, container.MountLabel, shared)
-			}
 			writable := !container.HostConfig.ReadonlyRootfs
 			if m, exists := container.MountPoints["/etc/hosts"]; exists {
 				writable = m.RW
+			} else {
+				label.Relabel(container.HostsPath, container.MountLabel, shared)
 			}
 			mounts = append(mounts, Mount{
 				Source:      container.HostsPath,
@@ -154,13 +151,24 @@ func (container *Container) CopyImagePathContent(v volume.Volume, destination st
 
 // ShmResourcePath returns path to shm
 func (container *Container) ShmResourcePath() (string, error) {
-	return container.GetRootResourcePath("shm")
+	return container.MountsResourcePath("shm")
 }
 
 // HasMountFor checks if path is a mountpoint
 func (container *Container) HasMountFor(path string) bool {
 	_, exists := container.MountPoints[path]
-	return exists
+	if exists {
+		return true
+	}
+
+	// Also search among the tmpfs mounts
+	for dest := range container.HostConfig.Tmpfs {
+		if dest == path {
+			return true
+		}
+	}
+
+	return false
 }
 
 // UnmountIpcMount uses the provided unmount function to unmount shm if it was mounted
@@ -210,49 +218,61 @@ func (container *Container) IpcMounts() []Mount {
 }
 
 // SecretMounts returns the mounts for the secret path.
-func (container *Container) SecretMounts() []Mount {
+func (container *Container) SecretMounts() ([]Mount, error) {
 	var mounts []Mount
 	for _, r := range container.SecretReferences {
 		if r.File == nil {
 			continue
 		}
+		src, err := container.SecretFilePath(*r)
+		if err != nil {
+			return nil, err
+		}
 		mounts = append(mounts, Mount{
-			Source:      container.SecretFilePath(*r),
+			Source:      src,
 			Destination: getSecretTargetPath(r),
 			Writable:    false,
 		})
 	}
 
-	return mounts
+	return mounts, nil
 }
 
 // UnmountSecrets unmounts the local tmpfs for secrets
 func (container *Container) UnmountSecrets() error {
-	if _, err := os.Stat(container.SecretMountPath()); err != nil {
+	p, err := container.SecretMountPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(p); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
 
-	return detachMounted(container.SecretMountPath())
+	return mount.RecursiveUnmount(p)
 }
 
 // ConfigMounts returns the mounts for configs.
-func (container *Container) ConfigMounts() []Mount {
+func (container *Container) ConfigMounts() ([]Mount, error) {
 	var mounts []Mount
 	for _, configRef := range container.ConfigReferences {
 		if configRef.File == nil {
 			continue
 		}
+		src, err := container.ConfigFilePath(*configRef)
+		if err != nil {
+			return nil, err
+		}
 		mounts = append(mounts, Mount{
-			Source:      container.ConfigFilePath(*configRef),
+			Source:      src,
 			Destination: configRef.File.Name,
 			Writable:    false,
 		})
 	}
 
-	return mounts
+	return mounts, nil
 }
 
 type conflictingUpdateOptions string
@@ -323,6 +343,12 @@ func (container *Container) UpdateContainer(hostConfig *containertypes.HostConfi
 	}
 	if resources.KernelMemory != 0 {
 		cResources.KernelMemory = resources.KernelMemory
+	}
+	if resources.CPURealtimePeriod != 0 {
+		cResources.CPURealtimePeriod = resources.CPURealtimePeriod
+	}
+	if resources.CPURealtimeRuntime != 0 {
+		cResources.CPURealtimeRuntime = resources.CPURealtimeRuntime
 	}
 
 	// update HostConfig of container

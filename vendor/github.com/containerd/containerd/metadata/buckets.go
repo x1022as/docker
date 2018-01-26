@@ -31,13 +31,13 @@ var (
 	bucketKeyVersion          = []byte(schemaVersion)
 	bucketKeyDBVersion        = []byte("version")    // stores the version of the schema
 	bucketKeyObjectLabels     = []byte("labels")     // stores the labels for a namespace.
-	bucketKeyObjectIndexes    = []byte("indexes")    // reserved
 	bucketKeyObjectImages     = []byte("images")     // stores image objects
 	bucketKeyObjectContainers = []byte("containers") // stores container objects
 	bucketKeyObjectSnapshots  = []byte("snapshots")  // stores snapshot references
 	bucketKeyObjectContent    = []byte("content")    // stores content references
 	bucketKeyObjectBlob       = []byte("blob")       // stores content links
 	bucketKeyObjectIngest     = []byte("ingest")     // stores ingest links
+	bucketKeyObjectLeases     = []byte("leases")     // stores leases
 
 	bucketKeyDigest      = []byte("digest")
 	bucketKeyMediaType   = []byte("mediatype")
@@ -53,6 +53,7 @@ var (
 	bucketKeySnapshotter = []byte("snapshotter")
 	bucketKeyTarget      = []byte("target")
 	bucketKeyExtensions  = []byte("extensions")
+	bucketKeyCreatedAt   = []byte("createdat")
 )
 
 func getBucket(tx *bolt.Tx, keys ...[]byte) *bolt.Bucket {

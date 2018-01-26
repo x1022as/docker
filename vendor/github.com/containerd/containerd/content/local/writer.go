@@ -2,6 +2,7 @@ package local
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -56,6 +57,13 @@ func (w *writer) Write(p []byte) (n int, err error) {
 }
 
 func (w *writer) Commit(ctx context.Context, size int64, expected digest.Digest, opts ...content.Opt) error {
+	var base content.Info
+	for _, opt := range opts {
+		if err := opt(&base); err != nil {
+			return err
+		}
+	}
+
 	if w.fp == nil {
 		return errors.Wrap(errdefs.ErrFailedPrecondition, "cannot commit on closed writer")
 	}
@@ -123,6 +131,12 @@ func (w *writer) Commit(ctx context.Context, size int64, expected digest.Digest,
 	w.fp = nil
 	unlock(w.ref)
 
+	if w.s.ls != nil && base.Labels != nil {
+		if err := w.s.ls.Set(dgst, base.Labels); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -139,6 +153,7 @@ func (w *writer) Close() (err error) {
 	if w.fp != nil {
 		w.fp.Sync()
 		err = w.fp.Close()
+		writeTimestampFile(filepath.Join(w.path, "updatedat"), w.updatedAt)
 		w.fp = nil
 		unlock(w.ref)
 		return
@@ -153,5 +168,8 @@ func (w *writer) Truncate(size int64) error {
 	}
 	w.offset = 0
 	w.digester.Hash().Reset()
+	if _, err := w.fp.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
 	return w.fp.Truncate(0)
 }
