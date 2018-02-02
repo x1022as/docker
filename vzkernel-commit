@@ -1,0 +1,138 @@
+439f330f4c9aa56c2239f49ecc3acd61b1f5ea59  ub: ressurrect iostat and ioprio reporting
+
+8372d3e64ca459bda463fab243a7b6b0901872c3   Initial patch commit + compilation fixes   -- 超大patch
+
+Dd5549bfeed3f4b5673c03c38ef6369ff42d7602  FS/QUOTA: Compatibility with older quotactl interface
+
+Bad0fc7ecdc2b88b1074b4f1a2f43cb34a28c11e  ve/sysfs: add new interface to control sysfs
+
+B9a6fbd1cb11358d341a6e125764290d3b470770  ve/cgroups: Introduce subgroups_limit control
+
+45c8093d697113a5dc53a4689065c23b00d5d177  ve/cgroups: Introduce CFTYPE_ONLY_ON_VE_ROOT flag for control files
+
+0848751102331c9848abc772c6b5c762e7dcc794   sched: use topmost limited ancestor for cpulimit balancing
+
+B7fe28a59797cc7187f0c43bfecbabb5b0841f7d sched: Port diff-sched-make-nr_cpus-limit-support-hierarchies
+
+Ece3d3ff3afa9573ef7a2ce1252abbf825126fc0  fs: kernel direct aio
+
+
+142941c mm: account all page tables for mm
+
+
+d265583 UBC: fix lost retval in memcg-ub link layer
+4dacfa5 UBC: cleanup permission checks
+d660a8f UBC: tie beancounter and memory-cgroup together
+1e90d79 UBC: link memcg with beancounter
+ -- 感觉所有的cgroup都通过UBC来接管了。
+
+ad62525 VE/PROC: show /proc/filesystems in container
+f455c40 VE/PROC: unblock more proc entries
+03e0dc0 VE/PROC: unblock sysvipc interface
+0e841e2 VE/PROC: fix bug in proc_readdir_de()
+195e3a5 VE/PROC: replace glob_proc_root with S_ISVTX
+34666fa VE/PROC: restricted proc-entries scope
+
+
+9755453 VE/SYSCTL: ignore writes to sysctl vm.mmap_min_addr by
+e973a80 VE/SYSCTL: fixup virtualized sysctls
+b722a67 VE/SYSCTL: implement virtualized methods
+cfcdda9 VE/SYSCTL/IPC: mark as virtualized
+0583ef5 VE/PROC/SYSCTL: show real permissions in stat
+44ef25d VE/SYSCTL: write permission restriction
+
+
+ab38bc3 ve/sched: port boosting hacks against prio inversion
+51da395 ve/sched: port vcpu hotslice
+1018625 ve/sched: port nr cpus limit
+
+30c13be ms/memcg, slab: do not destroy children caches if parent has aliases
+118ccb1 ms/memcg, slab: unregister cache from memcg before starting to destroy it
+a05fa94 ms/memcg, slab: separate memcg vs root cache creation paths
+674ff03 ms/memcg, slab: never try to merge memcg caches
+47bb1e1 ms/memcg, slab: cleanup memcg cache creation
+8e36ced ms/memcg: fix mutex not unlocked on memcg_create_kmem_cache fail path
+56c37e4 ms/memcg: remove unused code from kmem_cache_destroy_work_func
+8ec2156a ms/memcg: do not account memory used for cache creation
+01d4298 ms/memcg: also test for skip accounting at the page allocation level
+c6fd363b ms/memcg: remove KMEM_ACCOUNTED_ACTIVATED flag
+4d3b71f ms/memcg, slab: RCU protect memcg_params for root caches
+2e1fa0c ms/memcg: get rid of kmem_cache_dup()
+81f3ebb ms/memcg, slab: fix races in per-memcg cache creation/destruction
+f9ad9b3 ms/memcg: fix possible NULL deref while traversing memcg_slab_caches list
+826dc68 ms/memcg, slab: fix barrier usage when accessing memcg_caches
+e26b1458 ms/memcg, slab: clean up memcg cache initialization/destruction
+14c8127 ms/memcg, kmem: use cache_from_memcg_idx instead of hard code
+421ae42 ms/memcg, kmem: rename cache_from_memcg to cache_from_memcg_idx
+be7e613 ms/memcg, kmem: use is_root_cache instead of hard code
+bd159a9 ms/memcg, slab: kmem_cache_create_memcg(): fix memleak on fail path
+35f4f16 ms/slab: clean up kmem_cache_create_memcg() error handling
+68eb743 ms/memcg: don't need to free memcg via RCU or workqueue
+f599300 ms/memcg: kill memcg refcnt
+47804fb ms/memcg: don't need to get a reference to the parent
+eda4b0d ms/memcg: use css_get/put for swap memcg
+6305709 ms/memcg: use css_get/put when charging/uncharging kmem
+5d2ff1c ms/memcg: don't use mem_cgroup_get() when creating a kmemcg cache
+d631db8 ms/memcg: use css_get() in sock_update_memcg()
+
+969b535 vziolimit: compilation fix
+7d86150 vziolimit: port diff-ubc-iostat-wire-vziolimit-into-deadline-io_scheduler
+d2db3e0 vziolimit: port diff-ubc-introduce-atomic-flags-bit-field-shadow
+b92a2e4 vziolimit: port diff-vziolimit-charge-fuse-requests-into-iops-throttler
+142fa3a vziolimit: port diff-vziolimit-dont-change-state-at-speed-change
+7421374 vziolimit: port diff-vziolimit-fix-rounding-error-in-throttler
+6d4c198 vziolimit: port diff-ubc-iolimit-rework-async-iops-limit
+71b1887 vziolimit: port diff-ubc-iolimit-precharge-dirty-pages-opensource
+2a38a95 vziolimit: port diff-ubc-iolimit-keep-charge-in-throttler
+e091544 vziolimit: port diff-iolimit-implement-the-iops-limiting
+99d8964 vziolimit: port diff-vziolimit-set-GPL-license
+07fbb5d vziolimit: port diff-vziolimit-no-top-bc
+6a0c69a vziolimit: port diff-iolimit-wakup-at-kill-and-limit-change
+eb4a23a vziolimit: port diff-iolimit-dont-throttle-flushers
+16876c7 vziolimit: port diff-iolimit-vzctl-api
+456dddd vziolimit: port diff-iolimit-handle-virtinfo-events
+0ddd5e2 vziolimit: port diff-iolimit-plain-throttler
+cbe5be0 vziolimit: port diff-iolimit-initial-skeleton-opensource
+20e8c66 vziolimit: remove dummy module
+
+9b058b9 arch: mask cpuid 0x00000007 features in /proc/cpuinfo
+4ea30eb arch/x86: assure cpuinfo inside ct is subset of host's one
+9dcbeb2 arch/x86: disable cpuid faulting on reboot and cpu offline
+6044fe2 arch/x86: only enable cpuid faulting for containers
+e6eac06 arch/x86: report cpuid:0000000d_1 in cpuinfo
+3162d99 arch/x86: check if cpuid level exists while reporting cpuinfo
+9fcc9a4 arch/x86: take into account cpuid override while reporting cpuinfo
+800da24 arch/x86: introduce cpuid override
+
+
+1dbe63e connector: take cn_already_initialized from VE
+9b52088 connector: per-ve helpers intoruduced
+855c306 connector: use device stored in VE
+5639564 connector: per-ve init and fini helpers introduced
+f7495f6 connector: introduce VE-aware get_cdev() helper
+f0ae476 connector: store all private data on VE structure
+21d8603 connector: remove redundant input callback from cn_dev
+
+
+9328bdccdda5212624d57d4e97eb0f3da56a70e0  MS/MM/SLAB: show slab_info core
+Dd5549bfeed3f4b5673c03c38ef6369ff42d7602 FS/QUOTA: Compatibility with older quotactl interface 
+77db133a7d6000cda5bd82aec740583e50991a25 VE: convert to cgroup 
+100f6332095f9ee67eab4c2dbfe64e27d2abbe39 VE/SYSFS: add xattrs to control ve-permissions
+8f33984009c03663555c06de8cafbe2a719d3991 VE: virtualize cgroups ****
+Bad0fc7ecdc2b88b1074b4f1a2f43cb34a28c11e ve/sysfs: add new interface to control sysfs
+678040285612061aa36923fb4458203795a06579  pfcache: add generic mapping peers
+286b5e3708c4fb6f661034e29ab85712a417bf55  pfcache: add hashed peers for ext4
+
+Ece3d3ff3afa9573ef7a2ce1252abbf825126fc0  fs: kernel direct aio
+A1d1b73097488a34cee79864faa7c23d89860f9e  ve/bc/mm: port UB_PRIVVMPAGES, UB_SHMPAGES, and UB_LOCKEDPAGES accounting
+
+A1d1b73097488a34cee79864faa7c23d89860f9e  ve/bc/mm: port UB_PRIVVMPAGES, UB_SHMPAGES, and UB_LOCKEDPAGES accounting
+9e88af3bd4acf8697a6e2c41c9b0e75169656c10 vzlist: add vzlist from 2.6.32-x as is
+66b3aa30ad8f09287c064af9b898f47c4a2fa833 vzstat: port vzstat module from rh6  ****
+826ed8fe7874928d2638a975d62b497b78ff33b6 mm: introduce transcendent file cache 
+1cecf8becebad1033dcd63ff8265a718056ab89e   mm: transcendent swap cache 
+0f2140936712f2d753dfdd8a4c6306f46f9e6398  vziolimit: add bc cgroup control 
+E3983c892dec63d2e4f38f961baf987ec25866ea  ve/devmnt: Introduce ve::devmnt list  ***
+3fb01e3fff2aa9d50f4f8430a38bff02a6c7011b  ve/fs/devmnt: process mount options
+148fe4519579221aad215c53856e84352f919ac2  tcache: improve reclaim fairnes
+
