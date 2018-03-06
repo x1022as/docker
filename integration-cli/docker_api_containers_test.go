@@ -1372,7 +1372,8 @@ func (s *DockerSuite) TestContainerAPICreateNoHostConfig118(c *check.C) {
 		Image: "busybox",
 	}
 
-	cli, err := request.NewEnvClientWithVersion("v1.18")
+	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion("v1.18"))
+	c.Assert(err, checker.IsNil)
 
 	_, err = cli.ContainerCreate(context.Background(), &config, &containertypes.HostConfig{}, &networktypes.NetworkingConfig{}, "")
 	c.Assert(err, checker.IsNil)
@@ -1712,7 +1713,7 @@ func (s *DockerSuite) TestContainersAPICreateMountsValidation(c *check.C) {
 					Type:   "bind",
 					Source: notExistPath,
 					Target: destPath}}},
-			msg: "bind source path does not exist",
+			msg: "bind mount source path does not exist: " + notExistPath,
 		},
 		{
 			config: containertypes.Config{

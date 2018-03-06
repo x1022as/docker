@@ -1,4 +1,4 @@
-package plugin
+package plugin // import "github.com/docker/docker/plugin"
 
 import (
 	"archive/tar"
@@ -33,6 +33,7 @@ import (
 	"github.com/docker/docker/plugin/v2"
 	refstore "github.com/docker/docker/reference"
 	digest "github.com/opencontainers/go-digest"
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
@@ -146,8 +147,13 @@ func (s *tempConfigStore) Get(d digest.Digest) ([]byte, error) {
 	return s.config, nil
 }
 
-func (s *tempConfigStore) RootFSAndOSFromConfig(c []byte) (*image.RootFS, string, error) {
+func (s *tempConfigStore) RootFSFromConfig(c []byte) (*image.RootFS, error) {
 	return configToRootFS(c)
+}
+
+func (s *tempConfigStore) PlatformFromConfig(c []byte) (*specs.Platform, error) {
+	// TODO: LCOW/Plugins. This will need revisiting. For now use the runtime OS
+	return &specs.Platform{OS: runtime.GOOS}, nil
 }
 
 func computePrivileges(c types.PluginConfig) types.PluginPrivileges {
@@ -534,8 +540,13 @@ func (s *pluginConfigStore) Get(d digest.Digest) ([]byte, error) {
 	return ioutil.ReadAll(rwc)
 }
 
-func (s *pluginConfigStore) RootFSAndOSFromConfig(c []byte) (*image.RootFS, string, error) {
+func (s *pluginConfigStore) RootFSFromConfig(c []byte) (*image.RootFS, error) {
 	return configToRootFS(c)
+}
+
+func (s *pluginConfigStore) PlatformFromConfig(c []byte) (*specs.Platform, error) {
+	// TODO: LCOW/Plugins. This will need revisiting. For now use the runtime OS
+	return &specs.Platform{OS: runtime.GOOS}, nil
 }
 
 type pluginLayerProvider struct {
@@ -639,14 +650,10 @@ func (pm *Manager) Remove(name string, config *types.PluginRmConfig) error {
 		return errors.Wrap(err, "error unmounting plugin data")
 	}
 
-	removeDir := pluginDir + "-removing"
-	if err := os.Rename(pluginDir, removeDir); err != nil {
-		return errors.Wrap(err, "error performing atomic remove of plugin dir")
+	if err := atomicRemoveAll(pluginDir); err != nil {
+		return err
 	}
 
-	if err := system.EnsureRemoveAll(removeDir); err != nil {
-		return errors.Wrap(err, "error removing plugin dir")
-	}
 	pm.config.Store.Remove(p)
 	pm.config.LogPluginEvent(id, name, "remove")
 	pm.publisher.Publish(EventRemove{Plugin: p.PluginObj})
@@ -834,4 +841,36 @@ func splitConfigRootFSFromTar(in io.ReadCloser, config *[]byte) io.ReadCloser {
 		}
 	}()
 	return pr
+}
+
+func atomicRemoveAll(dir string) error {
+	renamed := dir + "-removing"
+
+	err := os.Rename(dir, renamed)
+	switch {
+	case os.IsNotExist(err), err == nil:
+		// even if `dir` doesn't exist, we can still try and remove `renamed`
+	case os.IsExist(err):
+		// Some previous remove failed, check if the origin dir exists
+		if e := system.EnsureRemoveAll(renamed); e != nil {
+			return errors.Wrap(err, "rename target already exists and could not be removed")
+		}
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			// origin doesn't exist, nothing left to do
+			return nil
+		}
+
+		// attempt to rename again
+		if err := os.Rename(dir, renamed); err != nil {
+			return errors.Wrap(err, "failed to rename dir for atomic removal")
+		}
+	default:
+		return errors.Wrap(err, "failed to rename dir for atomic removal")
+	}
+
+	if err := system.EnsureRemoveAll(renamed); err != nil {
+		os.Rename(renamed, dir)
+		return err
+	}
+	return nil
 }
