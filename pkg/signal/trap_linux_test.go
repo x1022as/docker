@@ -3,26 +3,26 @@
 package signal // import "github.com/docker/docker/pkg/signal"
 
 import (
-	"fmt"
 	"io/ioutil"
 	"os"
 	"os/exec"
 	"syscall"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func buildTestBinary(t *testing.T, tmpdir string, prefix string) (string, string) {
+	t.Helper()
 	tmpDir, err := ioutil.TempDir(tmpdir, prefix)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	exePath := tmpDir + "/" + prefix
 	wd, _ := os.Getwd()
 	testHelperCode := wd + "/testfiles/main.go"
 	cmd := exec.Command("go", "build", "-o", exePath, testHelperCode)
 	err = cmd.Run()
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	return exePath, tmpDir
 }
 
@@ -42,41 +42,42 @@ func TestTrap(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	for _, v := range sigmap {
-		cmd := exec.Command(exePath)
-		cmd.Env = append(os.Environ(), fmt.Sprintf("SIGNAL_TYPE=%s", v.name))
-		if v.multiple {
-			cmd.Env = append(cmd.Env, "IF_MULTIPLE=1")
-		}
-		err := cmd.Start()
-		require.NoError(t, err)
-		err = cmd.Wait()
-		if e, ok := err.(*exec.ExitError); ok {
+		t.Run(v.name, func(t *testing.T) {
+			cmd := exec.Command(exePath)
+			cmd.Env = append(os.Environ(), "SIGNAL_TYPE="+v.name)
+			if v.multiple {
+				cmd.Env = append(cmd.Env, "IF_MULTIPLE=1")
+			}
+			err := cmd.Start()
+			assert.NilError(t, err)
+			err = cmd.Wait()
+			e, ok := err.(*exec.ExitError)
+			assert.Assert(t, ok, "expected exec.ExitError, got %T", e)
+
 			code := e.Sys().(syscall.WaitStatus).ExitStatus()
 			if v.multiple {
-				assert.Equal(t, 128+int(v.signal.(syscall.Signal)), code)
+				assert.Check(t, is.DeepEqual(128+int(v.signal.(syscall.Signal)), code))
 			} else {
-				assert.Equal(t, 99, code)
+				assert.Check(t, is.Equal(99, code))
 			}
-			continue
-		}
-		t.Fatal("process didn't end with any error")
+		})
 	}
 
 }
 
 func TestDumpStacks(t *testing.T) {
 	directory, err := ioutil.TempDir("", "test-dump-tasks")
-	assert.NoError(t, err)
+	assert.Check(t, err)
 	defer os.RemoveAll(directory)
 	dumpPath, err := DumpStacks(directory)
-	assert.NoError(t, err)
+	assert.Check(t, err)
 	readFile, _ := ioutil.ReadFile(dumpPath)
 	fileData := string(readFile)
-	assert.Contains(t, fileData, "goroutine")
+	assert.Check(t, is.Contains(fileData, "goroutine"))
 }
 
 func TestDumpStacksWithEmptyInput(t *testing.T) {
 	path, err := DumpStacks("")
-	assert.NoError(t, err)
-	assert.Equal(t, os.Stderr.Name(), path)
+	assert.Check(t, err)
+	assert.Check(t, is.Equal(os.Stderr.Name(), path))
 }

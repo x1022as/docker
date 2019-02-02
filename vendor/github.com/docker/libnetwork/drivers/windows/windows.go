@@ -365,6 +365,22 @@ func (d *driver) CreateNetwork(id string, option map[string]interface{}, nInfo d
 
 		config.HnsID = hnsresponse.Id
 		genData[HNSID] = config.HnsID
+
+	} else {
+		// Delete any stale HNS endpoints for this network.
+		if endpoints, err := hcsshim.HNSListEndpointRequest(); err == nil {
+			for _, ep := range endpoints {
+				if ep.VirtualNetwork == config.HnsID {
+					logrus.Infof("Removing stale HNS endpoint %s", ep.Id)
+					_, err = hcsshim.HNSEndpointRequest("DELETE", ep.Id, "")
+					if err != nil {
+						logrus.Warnf("Error removing HNS endpoint %s", ep.Id)
+					}
+				}
+			}
+		} else {
+			logrus.Warnf("Error listing HNS endpoints for network %s", config.HnsID)
+		}
 	}
 
 	n, err := d.getNetwork(id)
@@ -399,7 +415,7 @@ func (d *driver) DeleteNetwork(nid string) error {
 	// delele endpoints belong to this network
 	for _, ep := range n.endpoints {
 		if err := d.storeDelete(ep); err != nil {
-			logrus.Warnf("Failed to remove bridge endpoint %s from store: %v", ep.id[0:7], err)
+			logrus.Warnf("Failed to remove bridge endpoint %.7s from store: %v", ep.id, err)
 		}
 	}
 
@@ -688,7 +704,7 @@ func (d *driver) CreateEndpoint(nid, eid string, ifInfo driverapi.InterfaceInfo,
 	}
 
 	if err = d.storeUpdate(endpoint); err != nil {
-		logrus.Errorf("Failed to save endpoint %s to store: %v", endpoint.id[0:7], err)
+		logrus.Errorf("Failed to save endpoint %.7s to store: %v", endpoint.id, err)
 	}
 
 	return nil
@@ -715,7 +731,7 @@ func (d *driver) DeleteEndpoint(nid, eid string) error {
 	}
 
 	if err := d.storeDelete(ep); err != nil {
-		logrus.Warnf("Failed to remove bridge endpoint %s from store: %v", ep.id[0:7], err)
+		logrus.Warnf("Failed to remove bridge endpoint %.7s from store: %v", ep.id, err)
 	}
 	return nil
 }

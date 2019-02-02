@@ -6,16 +6,16 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/integration/internal/request"
-	"github.com/docker/docker/internal/testutil"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
+	"gotest.tools/skip"
 )
 
 func TestRemoveImageOrphaning(t *testing.T) {
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows", "FIXME")
 	defer setupTest(t)()
 	ctx := context.Background()
-	client := request.NewAPIClient(t)
+	client := testEnv.APIClient()
 
 	img := "test-container-orphaning"
 
@@ -25,12 +25,12 @@ func TestRemoveImageOrphaning(t *testing.T) {
 		Changes:   []string{`ENTRYPOINT ["true"]`},
 		Reference: img,
 	})
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	// verifies that reference now points to first image
 	resp, _, err := client.ImageInspectWithRaw(ctx, img)
-	require.NoError(t, err)
-	assert.Equal(t, resp.ID, commitResp1.ID)
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(resp.ID, commitResp1.ID))
 
 	// Create a container from created image, and commit a small change with same reference name
 	cID2 := container.Create(t, ctx, client, container.WithImage(img), container.WithCmd(""))
@@ -38,23 +38,23 @@ func TestRemoveImageOrphaning(t *testing.T) {
 		Changes:   []string{`LABEL Maintainer="Integration Tests"`},
 		Reference: img,
 	})
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	// verifies that reference now points to second image
 	resp, _, err = client.ImageInspectWithRaw(ctx, img)
-	require.NoError(t, err)
-	assert.Equal(t, resp.ID, commitResp2.ID)
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(resp.ID, commitResp2.ID))
 
 	// try to remove the image, should not error out.
 	_, err = client.ImageRemove(ctx, img, types.ImageRemoveOptions{})
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	// check if the first image is still there
 	resp, _, err = client.ImageInspectWithRaw(ctx, commitResp1.ID)
-	require.NoError(t, err)
-	assert.Equal(t, resp.ID, commitResp1.ID)
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(resp.ID, commitResp1.ID))
 
 	// check if the second image has been deleted
 	_, _, err = client.ImageInspectWithRaw(ctx, commitResp2.ID)
-	testutil.ErrorContains(t, err, "No such image:")
+	assert.Check(t, is.ErrorContains(err, "No such image:"))
 }

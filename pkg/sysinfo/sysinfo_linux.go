@@ -95,6 +95,10 @@ func checkCgroupMem(cgMounts map[string]string, quiet bool) cgroupMemInfo {
 	if !quiet && !kernelMemory {
 		logrus.Warn("Your kernel does not support kernel memory limit")
 	}
+	kernelMemoryTCP := cgroupEnabled(mountPoint, "memory.kmem.tcp.limit_in_bytes")
+	if !quiet && !kernelMemoryTCP {
+		logrus.Warn("Your kernel does not support kernel memory TCP limit")
+	}
 
 	return cgroupMemInfo{
 		MemoryLimit:       true,
@@ -103,6 +107,7 @@ func checkCgroupMem(cgMounts map[string]string, quiet bool) cgroupMemInfo {
 		OomKillDisable:    oomKillDisable,
 		MemorySwappiness:  memorySwappiness,
 		KernelMemory:      kernelMemory,
+		KernelMemoryTCP:   kernelMemoryTCP,
 	}
 }
 
@@ -227,7 +232,7 @@ func checkCgroupCpusetInfo(cgMounts map[string]string, quiet bool) cgroupCpusetI
 
 // checkCgroupPids reads the pids information from the pids cgroup mount point.
 func checkCgroupPids(quiet bool) cgroupPids {
-	_, err := cgroups.FindCgroupMountpoint("pids")
+	_, err := cgroups.FindCgroupMountpoint("", "pids")
 	if err != nil {
 		if !quiet {
 			logrus.Warn(err)

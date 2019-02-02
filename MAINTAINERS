@@ -40,6 +40,7 @@
 			"mlaventure",
 			"runcom",
 			"stevvooe",
+			"thajeztah",
 			"tianon",
 			"tibor",
 			"tonistiigi",
@@ -47,15 +48,6 @@
 			"vdemeester",
 			"vieux",
 			"yongtang"
-		]
-
-	[Org."Docs maintainers"]
-
-	# TODO Describe the docs maintainers role.
-
-		people = [
-			"misty",
-			"thajeztah"
 		]
 
 	[Org.Curators]
@@ -71,18 +63,17 @@
 	# - close an issue or pull request when it's inappropriate or off-topic
 
 		people = [
-			"aboch",
 			"alexellis",
 			"andrewhsu",
 			"anonymuse",
 			"chanwit",
-			"ehazlett",
 			"fntlnz",
 			"gianarb",
-			"mgoelzer",
+			"kolyshkin",
+			"olljanat",
 			"programmerq",
 			"rheinwein",
-			"ripcurld0",
+			"ripcurld",
 			"thajeztah"
 		]
 
@@ -164,7 +155,7 @@
 
 			# Alexander Morozov contributed many features to Docker, worked on the premise of 
 			# what later became containerd (and worked on that too), and made a "stupid" Go
-			# vendor tool specificaly for docker/docker needs: vndr (https://github.com/LK4D4/vndr).
+			# vendor tool specifically for docker/docker needs: vndr (https://github.com/LK4D4/vndr).
 			# Not many know that Alexander is a master negotiator, being able to change course
 			# of action with a single "Nope, we're not gonna do that".
 			"lk4d4",
@@ -241,11 +232,6 @@
 	Name = "Aaron Lehmann"
 	Email = "aaron.lehmann@docker.com"
 	GitHub = "aaronlehmann"
-
-	[people.aboch]
-	Name = "Alessandro Boch"
-	Email = "aboch@docker.com"
-	GitHub = "aboch"
 
 	[people.alexellis]
 	Name = "Alex Ellis"
@@ -372,6 +358,11 @@
 	Email = "justin.cormack@docker.com"
 	GitHub = "justincormack"
 
+	[people.kolyshkin]
+	Name = "Kir Kolyshkin"
+	Email = "kolyshkin@gmail.com"
+	GitHub = "kolyshkin"
+
 	[people.lk4d4]
 	Name = "Alexander Morozov"
 	Email = "lk4d4@docker.com"
@@ -382,20 +373,10 @@
 	Email = "madhu@docker.com"
 	GitHub = "mavenugo"
 
-	[people.mgoelzer]
-	Name = "Mike Goelzer"
-	Email = "mike.goelzer@docker.com"
-	GitHub = "mgoelzer"
-
 	[people.mhbauer]
 	Name = "Morgan Bauer"
 	Email = "mbauer@us.ibm.com"
 	GitHub = "mhbauer"
-
-	[people.misty]
-	Name = "Misty Stanley-Jones"
-	Email = "misty@docker.com"
-	GitHub = "mistyhacks"
 
 	[people.mlaventure]
 	Name = "Kenfe-Mickaël Laventure"
@@ -412,6 +393,11 @@
 	Email = "mrjana@docker.com"
 	GitHub = "mrjana"
 
+	[people.olljanat]
+	Name = "Olli Janatuinen"
+	Email = "olli.janatuinen@gmail.com"
+	GitHub = "olljanat"
+
 	[people.programmerq]
 	Name = "Jeff Anderson"
 	Email = "jeff@docker.com"
@@ -422,10 +408,10 @@
 	Email = "laura@codeship.com"
 	GitHub = "rheinwein"
 
-	[people.ripcurld0]
+	[people.ripcurld]
 	Name = "Boaz Shuster"
 	Email = "ripcurld.github@gmail.com"
-	GitHub = "ripcurld0"
+	GitHub = "ripcurld"
 
 	[people.runcom]
 	Name = "Antonio Murdaca"

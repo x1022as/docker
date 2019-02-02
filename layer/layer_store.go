@@ -27,7 +27,7 @@ import (
 const maxLayerDepth = 125
 
 type layerStore struct {
-	store       MetadataStore
+	store       *fileMetadataStore
 	driver      graphdriver.Driver
 	useTarSplit bool
 
@@ -45,7 +45,7 @@ type StoreOptions struct {
 	MetadataStorePathTemplate string
 	GraphDriver               string
 	GraphDriverOptions        []string
-	IDMappings                *idtools.IDMappings
+	IDMapping                 *idtools.IdentityMapping
 	PluginGetter              plugingetter.PluginGetter
 	ExperimentalEnabled       bool
 	OS                        string
@@ -56,8 +56,8 @@ func NewStoreFromOptions(options StoreOptions) (Store, error) {
 	driver, err := graphdriver.New(options.GraphDriver, options.PluginGetter, graphdriver.Options{
 		Root:                options.Root,
 		DriverOptions:       options.GraphDriverOptions,
-		UIDMaps:             options.IDMappings.UIDs(),
-		GIDMaps:             options.IDMappings.GIDs(),
+		UIDMaps:             options.IDMapping.UIDs(),
+		GIDMaps:             options.IDMapping.GIDs(),
 		ExperimentalEnabled: options.ExperimentalEnabled,
 	})
 	if err != nil {
@@ -65,18 +65,15 @@ func NewStoreFromOptions(options StoreOptions) (Store, error) {
 	}
 	logrus.Debugf("Initialized graph driver %s", driver)
 
-	fms, err := NewFSMetadataStore(fmt.Sprintf(options.MetadataStorePathTemplate, driver))
-	if err != nil {
-		return nil, err
-	}
+	root := fmt.Sprintf(options.MetadataStorePathTemplate, driver)
 
-	return NewStoreFromGraphDriver(fms, driver, options.OS)
+	return newStoreFromGraphDriver(root, driver, options.OS)
 }
 
-// NewStoreFromGraphDriver creates a new Store instance using the provided
+// newStoreFromGraphDriver creates a new Store instance using the provided
 // metadata store and graph driver. The metadata store will be used to restore
 // the Store.
-func NewStoreFromGraphDriver(store MetadataStore, driver graphdriver.Driver, os string) (Store, error) {
+func newStoreFromGraphDriver(root string, driver graphdriver.Driver, os string) (Store, error) {
 	if !system.IsOSSupported(os) {
 		return nil, fmt.Errorf("failed to initialize layer store as operating system '%s' is not supported", os)
 	}
@@ -85,8 +82,13 @@ func NewStoreFromGraphDriver(store MetadataStore, driver graphdriver.Driver, os 
 		caps = capDriver.Capabilities()
 	}
 
+	ms, err := newFSMetadataStore(root)
+	if err != nil {
+		return nil, err
+	}
+
 	ls := &layerStore{
-		store:       store,
+		store:       ms,
 		driver:      driver,
 		layerMap:    map[ChainID]*roLayer{},
 		mounts:      map[string]*mountedLayer{},
@@ -94,7 +96,7 @@ func NewStoreFromGraphDriver(store MetadataStore, driver graphdriver.Driver, os 
 		os:          os,
 	}
 
-	ids, mounts, err := store.List()
+	ids, mounts, err := ms.List()
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +119,10 @@ func NewStoreFromGraphDriver(store MetadataStore, driver graphdriver.Driver, os 
 	}
 
 	return ls, nil
+}
+
+func (ls *layerStore) Driver() graphdriver.Driver {
+	return ls.driver
 }
 
 func (ls *layerStore) loadLayer(layer ChainID) (*roLayer, error) {
@@ -225,7 +231,7 @@ func (ls *layerStore) loadMount(mount string) error {
 	return nil
 }
 
-func (ls *layerStore) applyTar(tx MetadataTransaction, ts io.Reader, parent string, layer *roLayer) error {
+func (ls *layerStore) applyTar(tx *fileMetadataTransaction, ts io.Reader, parent string, layer *roLayer) error {
 	digester := digest.Canonical.Digester()
 	tr := io.TeeReader(ts, digester.Hash())
 
@@ -247,12 +253,13 @@ func (ls *layerStore) applyTar(tx MetadataTransaction, ts io.Reader, parent stri
 	}
 
 	applySize, err := ls.driver.ApplyDiff(layer.cacheID, parent, rdr)
+	// discard trailing data but ensure metadata is picked up to reconstruct stream
+	// unconditionally call io.Copy here before checking err to ensure the resources
+	// allocated by NewInputTarStream above are always released
+	io.Copy(ioutil.Discard, rdr) // ignore error as reader may be closed
 	if err != nil {
 		return err
 	}
-
-	// Discard trailing data but ensure metadata is picked up to reconstruct stream
-	io.Copy(ioutil.Discard, rdr) // ignore error as reader may be closed
 
 	layer.size = applySize
 	layer.diffID = DiffID(digester.Digest())

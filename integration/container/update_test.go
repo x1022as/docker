@@ -7,16 +7,14 @@ import (
 
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/integration/internal/request"
-	"github.com/docker/docker/internal/testutil"
-	"github.com/gotestyourself/gotestyourself/poll"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
+	"gotest.tools/poll"
 )
 
 func TestUpdateRestartPolicy(t *testing.T) {
 	defer setupTest(t)()
-	client := request.NewAPIClient(t)
+	client := testEnv.APIClient()
 	ctx := context.Background()
 
 	cID := container.Run(t, ctx, client, container.WithCmd("sh", "-c", "sleep 1 && false"), func(c *container.TestContainerConfig) {
@@ -32,7 +30,7 @@ func TestUpdateRestartPolicy(t *testing.T) {
 			MaximumRetryCount: 5,
 		},
 	})
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	timeout := 60 * time.Second
 	if testEnv.OSType == "windows" {
@@ -42,14 +40,14 @@ func TestUpdateRestartPolicy(t *testing.T) {
 	poll.WaitOn(t, container.IsInState(ctx, client, cID, "exited"), poll.WithDelay(100*time.Millisecond), poll.WithTimeout(timeout))
 
 	inspect, err := client.ContainerInspect(ctx, cID)
-	require.NoError(t, err)
-	assert.Equal(t, inspect.RestartCount, 5)
-	assert.Equal(t, inspect.HostConfig.RestartPolicy.MaximumRetryCount, 5)
+	assert.NilError(t, err)
+	assert.Check(t, is.Equal(inspect.RestartCount, 5))
+	assert.Check(t, is.Equal(inspect.HostConfig.RestartPolicy.MaximumRetryCount, 5))
 }
 
 func TestUpdateRestartWithAutoRemove(t *testing.T) {
 	defer setupTest(t)()
-	client := request.NewAPIClient(t)
+	client := testEnv.APIClient()
 	ctx := context.Background()
 
 	cID := container.Run(t, ctx, client, func(c *container.TestContainerConfig) {
@@ -61,5 +59,5 @@ func TestUpdateRestartWithAutoRemove(t *testing.T) {
 			Name: "always",
 		},
 	})
-	testutil.ErrorContains(t, err, "Restart policy cannot be updated because AutoRemove is enabled for the container")
+	assert.Check(t, is.ErrorContains(err, "Restart policy cannot be updated because AutoRemove is enabled for the container"))
 }

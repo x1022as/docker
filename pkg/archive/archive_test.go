@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -17,8 +18,10 @@ import (
 
 	"github.com/docker/docker/pkg/idtools"
 	"github.com/docker/docker/pkg/ioutils"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	rsystem "github.com/opencontainers/runc/libcontainer/system"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
+	"gotest.tools/skip"
 )
 
 var tmp string
@@ -152,9 +155,9 @@ func TestCompressStreamBzip2Unsupported(t *testing.T) {
 	}
 	defer dest.Close()
 
-	_, err = CompressStream(dest, Xz)
+	_, err = CompressStream(dest, Bzip2)
 	if err == nil {
-		t.Fatalf("Should fail as xz is unsupported for compression format.")
+		t.Fatalf("Should fail as bzip2 is unsupported for compression format.")
 	}
 }
 
@@ -197,14 +200,14 @@ func TestExtensionGzip(t *testing.T) {
 	compression := Gzip
 	output := compression.Extension()
 	if output != "tar.gz" {
-		t.Fatalf("The extension of a bzip2 archive should be 'tar.gz'")
+		t.Fatalf("The extension of a gzip archive should be 'tar.gz'")
 	}
 }
 func TestExtensionXz(t *testing.T) {
 	compression := Xz
 	output := compression.Extension()
 	if output != "tar.xz" {
-		t.Fatalf("The extension of a bzip2 archive should be 'tar.xz'")
+		t.Fatalf("The extension of a xz archive should be 'tar.xz'")
 	}
 }
 
@@ -263,7 +266,7 @@ func TestCmdStreamGood(t *testing.T) {
 
 func TestUntarPathWithInvalidDest(t *testing.T) {
 	tempFolder, err := ioutil.TempDir("", "docker-archive-test")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	defer os.RemoveAll(tempFolder)
 	invalidDestFolder := filepath.Join(tempFolder, "invalidDest")
 	// Create a src file
@@ -282,7 +285,7 @@ func TestUntarPathWithInvalidDest(t *testing.T) {
 
 	cmd := exec.Command("sh", "-c", "tar cf "+tarFileU+" "+srcFileU)
 	_, err = cmd.CombinedOutput()
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	err = defaultUntarPath(tarFile, invalidDestFolder)
 	if err == nil {
@@ -303,8 +306,9 @@ func TestUntarPathWithInvalidSrc(t *testing.T) {
 }
 
 func TestUntarPath(t *testing.T) {
+	skip.If(t, runtime.GOOS != "windows" && os.Getuid() != 0, "skipping test that requires root")
 	tmpFolder, err := ioutil.TempDir("", "docker-archive-test")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	defer os.RemoveAll(tmpFolder)
 	srcFile := filepath.Join(tmpFolder, "src")
 	tarFile := filepath.Join(tmpFolder, "src.tar")
@@ -325,7 +329,7 @@ func TestUntarPath(t *testing.T) {
 	}
 	cmd := exec.Command("sh", "-c", "tar cf "+tarFileU+" "+srcFileU)
 	_, err = cmd.CombinedOutput()
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	err = defaultUntarPath(tarFile, destFolder)
 	if err != nil {
@@ -433,6 +437,7 @@ func TestCopyWithTarInvalidSrc(t *testing.T) {
 }
 
 func TestCopyWithTarInexistentDestWillCreateIt(t *testing.T) {
+	skip.If(t, runtime.GOOS != "windows" && os.Getuid() != 0, "skipping test that requires root")
 	tempFolder, err := ioutil.TempDir("", "docker-archive-test")
 	if err != nil {
 		t.Fatal(nil)
@@ -604,10 +609,6 @@ func TestCopyFileWithTarSrcFile(t *testing.T) {
 }
 
 func TestTarFiles(t *testing.T) {
-	// TODO Windows: Figure out how to port this test.
-	if runtime.GOOS == "windows" {
-		t.Skip("Failing on Windows")
-	}
 	// try without hardlinks
 	if err := checkNoChanges(1000, false); err != nil {
 		t.Fatal(err)
@@ -686,10 +687,6 @@ func tarUntar(t *testing.T, origin string, options *TarOptions) ([]Change, error
 }
 
 func TestTarUntar(t *testing.T) {
-	// TODO Windows: Figure out how to fix this test.
-	if runtime.GOOS == "windows" {
-		t.Skip("Failing on Windows")
-	}
 	origin, err := ioutil.TempDir("", "docker-test-untar-origin")
 	if err != nil {
 		t.Fatal(err)
@@ -718,7 +715,7 @@ func TestTarUntar(t *testing.T) {
 			t.Fatalf("Error tar/untar for compression %s: %s", c.Extension(), err)
 		}
 
-		if len(changes) != 1 || changes[0].Path != "/3" {
+		if len(changes) != 1 || changes[0].Path != string(filepath.Separator)+"3" {
 			t.Fatalf("Unexpected differences after tarUntar: %v", changes)
 		}
 	}
@@ -726,12 +723,12 @@ func TestTarUntar(t *testing.T) {
 
 func TestTarWithOptionsChownOptsAlwaysOverridesIdPair(t *testing.T) {
 	origin, err := ioutil.TempDir("", "docker-test-tar-chown-opt")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	defer os.RemoveAll(origin)
 	filePath := filepath.Join(origin, "1")
 	err = ioutil.WriteFile(filePath, []byte("hello world"), 0700)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	idMaps := []idtools.IDMap{
 		0: {
@@ -751,15 +748,15 @@ func TestTarWithOptionsChownOptsAlwaysOverridesIdPair(t *testing.T) {
 		expectedUID int
 		expectedGID int
 	}{
-		{&TarOptions{ChownOpts: &idtools.IDPair{UID: 1337, GID: 42}}, 1337, 42},
-		{&TarOptions{ChownOpts: &idtools.IDPair{UID: 100001, GID: 100001}, UIDMaps: idMaps, GIDMaps: idMaps}, 100001, 100001},
-		{&TarOptions{ChownOpts: &idtools.IDPair{UID: 0, GID: 0}, NoLchown: false}, 0, 0},
-		{&TarOptions{ChownOpts: &idtools.IDPair{UID: 1, GID: 1}, NoLchown: true}, 1, 1},
-		{&TarOptions{ChownOpts: &idtools.IDPair{UID: 1000, GID: 1000}, NoLchown: true}, 1000, 1000},
+		{&TarOptions{ChownOpts: &idtools.Identity{UID: 1337, GID: 42}}, 1337, 42},
+		{&TarOptions{ChownOpts: &idtools.Identity{UID: 100001, GID: 100001}, UIDMaps: idMaps, GIDMaps: idMaps}, 100001, 100001},
+		{&TarOptions{ChownOpts: &idtools.Identity{UID: 0, GID: 0}, NoLchown: false}, 0, 0},
+		{&TarOptions{ChownOpts: &idtools.Identity{UID: 1, GID: 1}, NoLchown: true}, 1, 1},
+		{&TarOptions{ChownOpts: &idtools.Identity{UID: 1000, GID: 1000}, NoLchown: true}, 1000, 1000},
 	}
 	for _, testCase := range cases {
 		reader, err := TarWithOptions(filePath, testCase.opts)
-		require.NoError(t, err)
+		assert.NilError(t, err)
 		tr := tar.NewReader(reader)
 		defer reader.Close()
 		for {
@@ -768,18 +765,14 @@ func TestTarWithOptionsChownOptsAlwaysOverridesIdPair(t *testing.T) {
 				// end of tar archive
 				break
 			}
-			require.NoError(t, err)
-			assert.Equal(t, hdr.Uid, testCase.expectedUID, "Uid equals expected value")
-			assert.Equal(t, hdr.Gid, testCase.expectedGID, "Gid equals expected value")
+			assert.NilError(t, err)
+			assert.Check(t, is.Equal(hdr.Uid, testCase.expectedUID), "Uid equals expected value")
+			assert.Check(t, is.Equal(hdr.Gid, testCase.expectedGID), "Gid equals expected value")
 		}
 	}
 }
 
 func TestTarWithOptions(t *testing.T) {
-	// TODO Windows: Figure out how to fix this test.
-	if runtime.GOOS == "windows" {
-		t.Skip("Failing on Windows")
-	}
 	origin, err := ioutil.TempDir("", "docker-test-untar-origin")
 	if err != nil {
 		t.Fatal(err)
@@ -938,10 +931,6 @@ func BenchmarkTarUntarWithLinks(b *testing.B) {
 }
 
 func TestUntarInvalidFilenames(t *testing.T) {
-	// TODO Windows: Figure out how to fix this test.
-	if runtime.GOOS == "windows" {
-		t.Skip("Passes but hits breakoutError: platform and architecture is not supported")
-	}
 	for i, headers := range [][]*tar.Header{
 		{
 			{
@@ -966,10 +955,7 @@ func TestUntarInvalidFilenames(t *testing.T) {
 }
 
 func TestUntarHardlinkToSymlink(t *testing.T) {
-	// TODO Windows. There may be a way of running this, but turning off for now
-	if runtime.GOOS == "windows" {
-		t.Skip("hardlinks on Windows")
-	}
+	skip.If(t, runtime.GOOS != "windows" && os.Getuid() != 0, "skipping test that requires root")
 	for i, headers := range [][]*tar.Header{
 		{
 			{
@@ -998,10 +984,6 @@ func TestUntarHardlinkToSymlink(t *testing.T) {
 }
 
 func TestUntarInvalidHardlink(t *testing.T) {
-	// TODO Windows. There may be a way of running this, but turning off for now
-	if runtime.GOOS == "windows" {
-		t.Skip("hardlinks on Windows")
-	}
 	for i, headers := range [][]*tar.Header{
 		{ // try reading victim/hello (../)
 			{
@@ -1082,10 +1064,6 @@ func TestUntarInvalidHardlink(t *testing.T) {
 }
 
 func TestUntarInvalidSymlink(t *testing.T) {
-	// TODO Windows. There may be a way of running this, but turning off for now
-	if runtime.GOOS == "windows" {
-		t.Skip("hardlinks on Windows")
-	}
 	for i, headers := range [][]*tar.Header{
 		{ // try reading victim/hello (../)
 			{
@@ -1182,10 +1160,10 @@ func TestUntarInvalidSymlink(t *testing.T) {
 func TestTempArchiveCloseMultipleTimes(t *testing.T) {
 	reader := ioutil.NopCloser(strings.NewReader("hello"))
 	tempArchive, err := NewTempArchive(reader, "")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	buf := make([]byte, 10)
 	n, err := tempArchive.Read(buf)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	if n != 5 {
 		t.Fatalf("Expected to read 5 bytes. Read %d instead", n)
 	}
@@ -1244,38 +1222,40 @@ func TestReplaceFileTarWrapper(t *testing.T) {
 			map[string]TarModifierFunc{testcase.filename: testcase.modifier})
 
 		actual := readFileFromArchive(t, resultArchive, testcase.filename, testcase.fileCount, testcase.doc)
-		assert.Equal(t, testcase.expected, actual, testcase.doc)
+		assert.Check(t, is.Equal(testcase.expected, actual), testcase.doc)
 	}
 }
 
 // TestPrefixHeaderReadable tests that files that could be created with the
 // version of this package that was built with <=go17 are still readable.
 func TestPrefixHeaderReadable(t *testing.T) {
+	skip.If(t, runtime.GOOS != "windows" && os.Getuid() != 0, "skipping test that requires root")
+	skip.If(t, rsystem.RunningInUserNS(), "skipping test that requires more than 010000000 UIDs, which is unlikely to be satisfied when running in userns")
 	// https://gist.github.com/stevvooe/e2a790ad4e97425896206c0816e1a882#file-out-go
 	var testFile = []byte("\x1f\x8b\x08\x08\x44\x21\x68\x59\x00\x03\x74\x2e\x74\x61\x72\x00\x4b\xcb\xcf\x67\xa0\x35\x30\x80\x00\x86\x06\x10\x47\x01\xc1\x37\x40\x00\x54\xb6\xb1\xa1\xa9\x99\x09\x48\x25\x1d\x40\x69\x71\x49\x62\x91\x02\xe5\x76\xa1\x79\x84\x21\x91\xd6\x80\x72\xaf\x8f\x82\x51\x30\x0a\x46\x36\x00\x00\xf0\x1c\x1e\x95\x00\x06\x00\x00")
 
 	tmpDir, err := ioutil.TempDir("", "prefix-test")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	defer os.RemoveAll(tmpDir)
 	err = Untar(bytes.NewReader(testFile), tmpDir, nil)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	baseName := "foo"
 	pth := strings.Repeat("a", 100-len(baseName)) + "/" + baseName
 
 	_, err = os.Lstat(filepath.Join(tmpDir, pth))
-	require.NoError(t, err)
+	assert.NilError(t, err)
 }
 
 func buildSourceArchive(t *testing.T, numberOfFiles int) (io.ReadCloser, func()) {
 	srcDir, err := ioutil.TempDir("", "docker-test-srcDir")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	_, err = prepareUntarSourceDirectory(numberOfFiles, srcDir, false)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	sourceArchive, err := TarWithOptions(srcDir, &TarOptions{})
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	return sourceArchive, func() {
 		os.RemoveAll(srcDir)
 		sourceArchive.Close()
@@ -1291,7 +1271,7 @@ func createOrReplaceModifier(path string, header *tar.Header, content io.Reader)
 
 func createModifier(t *testing.T) TarModifierFunc {
 	return func(path string, header *tar.Header, content io.Reader) (*tar.Header, []byte, error) {
-		assert.Nil(t, content)
+		assert.Check(t, is.Nil(content))
 		return createOrReplaceModifier(path, header, content)
 	}
 }
@@ -1308,18 +1288,19 @@ func appendModifier(path string, header *tar.Header, content io.Reader) (*tar.He
 }
 
 func readFileFromArchive(t *testing.T, archive io.ReadCloser, name string, expectedCount int, doc string) string {
+	skip.If(t, runtime.GOOS != "windows" && os.Getuid() != 0, "skipping test that requires root")
 	destDir, err := ioutil.TempDir("", "docker-test-destDir")
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	defer os.RemoveAll(destDir)
 
 	err = Untar(archive, destDir, nil)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	files, _ := ioutil.ReadDir(destDir)
-	assert.Len(t, files, expectedCount, doc)
+	assert.Check(t, is.Len(files, expectedCount), doc)
 
 	content, err := ioutil.ReadFile(filepath.Join(destDir, name))
-	assert.NoError(t, err)
+	assert.Check(t, err)
 	return string(content)
 }
 
@@ -1338,7 +1319,7 @@ func TestDisablePigz(t *testing.T) {
 	// For the context canceller
 	contextReaderCloserWrapper := outsideReaderCloserWrapper.Reader.(*ioutils.ReadCloserWrapper)
 
-	assert.IsType(t, &gzip.Reader{}, contextReaderCloserWrapper.Reader)
+	assert.Equal(t, reflect.TypeOf(contextReaderCloserWrapper.Reader), reflect.TypeOf(&gzip.Reader{}))
 }
 
 func TestPigz(t *testing.T) {
@@ -1351,9 +1332,9 @@ func TestPigz(t *testing.T) {
 	_, err := exec.LookPath("unpigz")
 	if err == nil {
 		t.Log("Tested whether Pigz is used, as it installed")
-		assert.IsType(t, &io.PipeReader{}, contextReaderCloserWrapper.Reader)
+		assert.Equal(t, reflect.TypeOf(contextReaderCloserWrapper.Reader), reflect.TypeOf(&io.PipeReader{}))
 	} else {
 		t.Log("Tested whether Pigz is not used, as it not installed")
-		assert.IsType(t, &gzip.Reader{}, contextReaderCloserWrapper.Reader)
+		assert.Equal(t, reflect.TypeOf(contextReaderCloserWrapper.Reader), reflect.TypeOf(&gzip.Reader{}))
 	}
 }

@@ -1,7 +1,6 @@
 package libnetwork
 
 import (
-	"container/heap"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -514,9 +513,7 @@ func (ep *endpoint) sbJoin(sb *sandbox, options ...EndpointOption) (err error) {
 	// Current endpoint providing external connectivity for the sandbox
 	extEp := sb.getGatewayEndpoint()
 
-	sb.Lock()
-	heap.Push(&sb.endpoints, ep)
-	sb.Unlock()
+	sb.addEndpoint(ep)
 	defer func() {
 		if err != nil {
 			sb.removeEndpoint(ep)
@@ -542,6 +539,12 @@ func (ep *endpoint) sbJoin(sb *sandbox, options ...EndpointOption) (err error) {
 			}
 		}
 	}()
+
+	// Load balancing endpoints should never have a default gateway nor
+	// should they alter the status of a network's default gateway
+	if ep.loadBalancer && !sb.ingress {
+		return nil
+	}
 
 	if sb.needDefaultGW() && sb.getEndpointInGWNetwork() == nil {
 		return sb.setupDefaultGW()
@@ -620,7 +623,7 @@ func (ep *endpoint) rename(name string) error {
 	}
 
 	if c.isAgent() {
-		if err = ep.deleteServiceInfoFromCluster(sb, "rename"); err != nil {
+		if err = ep.deleteServiceInfoFromCluster(sb, true, "rename"); err != nil {
 			return types.InternalErrorf("Could not delete service state for endpoint %s from cluster on rename: %v", ep.Name(), err)
 		}
 	} else {
@@ -644,7 +647,7 @@ func (ep *endpoint) rename(name string) error {
 		}
 		defer func() {
 			if err != nil {
-				ep.deleteServiceInfoFromCluster(sb, "rename")
+				ep.deleteServiceInfoFromCluster(sb, true, "rename")
 				ep.name = oldName
 				ep.anonymous = oldAnonymous
 				ep.addServiceInfoToCluster(sb)
@@ -755,8 +758,12 @@ func (ep *endpoint) sbLeave(sb *sandbox, force bool, options ...EndpointOption) 
 		}
 	}
 
+	if err := ep.deleteServiceInfoFromCluster(sb, true, "sbLeave"); err != nil {
+		logrus.Warnf("Failed to clean up service info on container %s disconnect: %v", ep.name, err)
+	}
+
 	if err := sb.clearNetworkResources(ep); err != nil {
-		logrus.Warnf("Could not cleanup network resources on container %s disconnect: %v", ep.name, err)
+		logrus.Warnf("Failed to clean up network resources on container %s disconnect: %v", ep.name, err)
 	}
 
 	// Update the store about the sandbox detach only after we
@@ -769,7 +776,7 @@ func (ep *endpoint) sbLeave(sb *sandbox, force bool, options ...EndpointOption) 
 	}
 
 	if e := ep.deleteDriverInfoFromCluster(); e != nil {
-		logrus.Errorf("Could not delete endpoint state for endpoint %s from cluster: %v", ep.Name(), e)
+		logrus.Errorf("Failed to delete endpoint state for endpoint %s from cluster: %v", ep.Name(), e)
 	}
 
 	sb.deleteHostsEntries(n.getSvcRecords(ep))

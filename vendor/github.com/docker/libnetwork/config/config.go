@@ -10,6 +10,7 @@ import (
 	"github.com/docker/libkv/store"
 	"github.com/docker/libnetwork/cluster"
 	"github.com/docker/libnetwork/datastore"
+	"github.com/docker/libnetwork/ipamutils"
 	"github.com/docker/libnetwork/netlabel"
 	"github.com/docker/libnetwork/osl"
 	"github.com/sirupsen/logrus"
@@ -34,12 +35,14 @@ type DaemonCfg struct {
 	Debug                  bool
 	Experimental           bool
 	DataDir                string
+	ExecRoot               string
 	DefaultNetwork         string
 	DefaultDriver          string
 	Labels                 []string
 	DriverCfg              map[string]interface{}
 	ClusterProvider        cluster.Provider
 	NetworkControlPlaneMTU int
+	DefaultAddressPool     []*ipamutils.NetworkToSplit
 }
 
 // ClusterCfg represents cluster configuration
@@ -107,6 +110,13 @@ func OptionDefaultDriver(dd string) Option {
 	return func(c *Config) {
 		logrus.Debugf("Option DefaultDriver: %s", dd)
 		c.Daemon.DefaultDriver = strings.TrimSpace(dd)
+	}
+}
+
+// OptionDefaultAddressPoolConfig function returns an option setter for default address pool
+func OptionDefaultAddressPoolConfig(addressPool []*ipamutils.NetworkToSplit) Option {
+	return func(c *Config) {
+		c.Daemon.DefaultAddressPool = addressPool
 	}
 }
 
@@ -208,6 +218,7 @@ func OptionDataDir(dataDir string) Option {
 // OptionExecRoot function returns an option setter for exec root folder
 func OptionExecRoot(execRoot string) Option {
 	return func(c *Config) {
+		c.Daemon.ExecRoot = execRoot
 		osl.SetBasePath(execRoot)
 	}
 }

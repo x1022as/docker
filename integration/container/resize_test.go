@@ -7,18 +7,19 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types"
-	req "github.com/docker/docker/integration-cli/request"
+	"github.com/docker/docker/api/types/versions"
 	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/integration/internal/request"
-	"github.com/docker/docker/internal/testutil"
-	"github.com/gotestyourself/gotestyourself/poll"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	req "github.com/docker/docker/internal/test/request"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
+	"gotest.tools/poll"
+	"gotest.tools/skip"
 )
 
 func TestResize(t *testing.T) {
+	skip.If(t, testEnv.OSType == "windows", "FIXME")
 	defer setupTest(t)()
-	client := request.NewAPIClient(t)
+	client := testEnv.APIClient()
 	ctx := context.Background()
 
 	cID := container.Run(t, ctx, client)
@@ -29,12 +30,14 @@ func TestResize(t *testing.T) {
 		Height: 40,
 		Width:  40,
 	})
-	require.NoError(t, err)
+	assert.NilError(t, err)
 }
 
 func TestResizeWithInvalidSize(t *testing.T) {
+	skip.If(t, versions.LessThan(testEnv.DaemonAPIVersion(), "1.32"), "broken in earlier versions")
+	skip.If(t, testEnv.OSType == "windows", "FIXME")
 	defer setupTest(t)()
-	client := request.NewAPIClient(t)
+	client := testEnv.APIClient()
 	ctx := context.Background()
 
 	cID := container.Run(t, ctx, client)
@@ -43,13 +46,13 @@ func TestResizeWithInvalidSize(t *testing.T) {
 
 	endpoint := "/containers/" + cID + "/resize?h=foo&w=bar"
 	res, _, err := req.Post(endpoint)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusBadRequest, res.StatusCode)
+	assert.NilError(t, err)
+	assert.Check(t, is.DeepEqual(http.StatusBadRequest, res.StatusCode))
 }
 
 func TestResizeWhenContainerNotStarted(t *testing.T) {
 	defer setupTest(t)()
-	client := request.NewAPIClient(t)
+	client := testEnv.APIClient()
 	ctx := context.Background()
 
 	cID := container.Run(t, ctx, client, container.WithCmd("echo"))
@@ -60,5 +63,5 @@ func TestResizeWhenContainerNotStarted(t *testing.T) {
 		Height: 40,
 		Width:  40,
 	})
-	testutil.ErrorContains(t, err, "is not running")
+	assert.Check(t, is.ErrorContains(err, "is not running"))
 }

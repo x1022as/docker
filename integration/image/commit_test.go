@@ -5,15 +5,18 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/versions"
 	"github.com/docker/docker/integration/internal/container"
-	"github.com/docker/docker/integration/internal/request"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
+	"gotest.tools/skip"
 )
 
 func TestCommitInheritsEnv(t *testing.T) {
+	skip.If(t, versions.LessThan(testEnv.DaemonAPIVersion(), "1.36"), "broken in earlier versions")
+	skip.If(t, testEnv.DaemonInfo.OSType == "windows", "FIXME")
 	defer setupTest(t)()
-	client := request.NewAPIClient(t)
+	client := testEnv.APIClient()
 	ctx := context.Background()
 
 	cID1 := container.Create(t, ctx, client)
@@ -22,13 +25,13 @@ func TestCommitInheritsEnv(t *testing.T) {
 		Changes:   []string{"ENV PATH=/bin"},
 		Reference: "test-commit-image",
 	})
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	image1, _, err := client.ImageInspectWithRaw(ctx, commitResp1.ID)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	expectedEnv1 := []string{"PATH=/bin"}
-	assert.Equal(t, expectedEnv1, image1.Config.Env)
+	assert.Check(t, is.DeepEqual(expectedEnv1, image1.Config.Env))
 
 	cID2 := container.Create(t, ctx, client, container.WithImage(image1.ID))
 
@@ -36,10 +39,10 @@ func TestCommitInheritsEnv(t *testing.T) {
 		Changes:   []string{"ENV PATH=/usr/bin:$PATH"},
 		Reference: "test-commit-image",
 	})
-	require.NoError(t, err)
+	assert.NilError(t, err)
 
 	image2, _, err := client.ImageInspectWithRaw(ctx, commitResp2.ID)
-	require.NoError(t, err)
+	assert.NilError(t, err)
 	expectedEnv2 := []string{"PATH=/usr/bin:/bin"}
-	assert.Equal(t, expectedEnv2, image2.Config.Env)
+	assert.Check(t, is.DeepEqual(expectedEnv2, image2.Config.Env))
 }

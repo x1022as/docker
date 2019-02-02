@@ -13,8 +13,8 @@ export DOCKER_ENGINE_GOARCH=${DOCKER_ENGINE_GOARCH:-${ARCH}}
 : ${TESTDEBUG:=}
 
 integration_api_dirs=${TEST_INTEGRATION_DIR:-"$(
-	find ./integration -type d |
-	grep -vE '(^./integration($|/internal)|/testdata)')"}
+	find /tests/integration -type d |
+	grep -vE '(^/tests/integration($|/internal)|/testdata)')"}
 
 run_test_integration() {
 	[[ "$TESTFLAGS" != *-check.f* ]] && run_test_integration_suites
@@ -22,7 +22,7 @@ run_test_integration() {
 }
 
 run_test_integration_suites() {
-	local flags="-test.v -test.timeout=${TIMEOUT:=10m} $TESTFLAGS"
+	local flags="-test.v -test.timeout=${TIMEOUT:-10m} $TESTFLAGS"
 	for dir in $integration_api_dirs; do
 		if ! (
 			cd $dir
@@ -34,8 +34,8 @@ run_test_integration_suites() {
 
 run_test_integration_legacy_suites() {
 	(
-		flags="-check.v -check.timeout=${TIMEOUT} -test.timeout=360m $TESTFLAGS"
-		cd test/integration-cli
+		flags="-check.v -check.timeout=${TIMEOUT:-200m} -test.timeout=360m $TESTFLAGS"
+		cd /tests/integration-cli
 		echo "Running $PWD"
 		test_env ./test.main $flags
 	)
@@ -68,4 +68,5 @@ test_env() {
 	)
 }
 
+sh /scripts/ensure-emptyfs.sh
 run_test_integration

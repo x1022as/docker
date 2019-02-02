@@ -6,18 +6,14 @@ import (
 	"errors"
 	"io/ioutil"
 	"os"
-	"path/filepath"
 	"testing"
 
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/container"
 	"github.com/docker/docker/daemon/config"
-	"github.com/docker/docker/pkg/idtools"
-	"github.com/docker/docker/volume"
-	"github.com/docker/docker/volume/drivers"
-	"github.com/docker/docker/volume/local"
-	"github.com/docker/docker/volume/store"
-	"github.com/stretchr/testify/require"
+	"github.com/docker/docker/pkg/sysinfo"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 type fakeContainerGetter struct {
@@ -274,84 +270,109 @@ func TestNetworkOptions(t *testing.T) {
 	}
 }
 
-func TestMigratePre17Volumes(t *testing.T) {
-	rootDir, err := ioutil.TempDir("", "test-daemon-volumes")
-	if err != nil {
-		t.Fatal(err)
+func TestVerifyPlatformContainerResources(t *testing.T) {
+	t.Parallel()
+	var (
+		no  = false
+		yes = true
+	)
+
+	withMemoryLimit := func(si *sysinfo.SysInfo) {
+		si.MemoryLimit = true
 	}
-	defer os.RemoveAll(rootDir)
-
-	volumeRoot := filepath.Join(rootDir, "volumes")
-	err = os.MkdirAll(volumeRoot, 0755)
-	if err != nil {
-		t.Fatal(err)
+	withSwapLimit := func(si *sysinfo.SysInfo) {
+		si.SwapLimit = true
+	}
+	withOomKillDisable := func(si *sysinfo.SysInfo) {
+		si.OomKillDisable = true
 	}
 
-	containerRoot := filepath.Join(rootDir, "containers")
-	cid := "1234"
-	err = os.MkdirAll(filepath.Join(containerRoot, cid), 0755)
-	require.NoError(t, err)
-
-	vid := "5678"
-	vfsPath := filepath.Join(rootDir, "vfs", "dir", vid)
-	err = os.MkdirAll(vfsPath, 0755)
-	require.NoError(t, err)
-
-	config := []byte(`
+	tests := []struct {
+		name             string
+		resources        containertypes.Resources
+		sysInfo          sysinfo.SysInfo
+		update           bool
+		expectedWarnings []string
+	}{
 		{
-			"ID": "` + cid + `",
-			"Volumes": {
-				"/foo": "` + vfsPath + `",
-				"/bar": "/foo",
-				"/quux": "/quux"
+			name:             "no-oom-kill-disable",
+			resources:        containertypes.Resources{},
+			sysInfo:          sysInfo(t, withMemoryLimit),
+			expectedWarnings: []string{},
+		},
+		{
+			name: "oom-kill-disable-disabled",
+			resources: containertypes.Resources{
+				OomKillDisable: &no,
 			},
-			"VolumesRW": {
-				"/foo": true,
-				"/bar": true,
-				"/quux": false
+			sysInfo:          sysInfo(t, withMemoryLimit),
+			expectedWarnings: []string{},
+		},
+		{
+			name: "oom-kill-disable-not-supported",
+			resources: containertypes.Resources{
+				OomKillDisable: &yes,
+			},
+			sysInfo: sysInfo(t, withMemoryLimit),
+			expectedWarnings: []string{
+				"Your kernel does not support OomKillDisable. OomKillDisable discarded.",
+			},
+		},
+		{
+			name: "oom-kill-disable-without-memory-constraints",
+			resources: containertypes.Resources{
+				OomKillDisable: &yes,
+				Memory:         0,
+			},
+			sysInfo: sysInfo(t, withMemoryLimit, withOomKillDisable, withSwapLimit),
+			expectedWarnings: []string{
+				"OOM killer is disabled for the container, but no memory limit is set, this can result in the system running out of resources.",
+			},
+		},
+		{
+			name: "oom-kill-disable-with-memory-constraints-but-no-memory-limit-support",
+			resources: containertypes.Resources{
+				OomKillDisable: &yes,
+				Memory:         linuxMinMemory,
+			},
+			sysInfo: sysInfo(t, withOomKillDisable),
+			expectedWarnings: []string{
+				"Your kernel does not support memory limit capabilities or the cgroup is not mounted. Limitation discarded.",
+				"OOM killer is disabled for the container, but no memory limit is set, this can result in the system running out of resources.",
+			},
+		},
+		{
+			name: "oom-kill-disable-with-memory-constraints",
+			resources: containertypes.Resources{
+				OomKillDisable: &yes,
+				Memory:         linuxMinMemory,
+			},
+			sysInfo:          sysInfo(t, withMemoryLimit, withOomKillDisable, withSwapLimit),
+			expectedWarnings: []string{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			warnings, err := verifyPlatformContainerResources(&tc.resources, &tc.sysInfo, tc.update)
+			assert.NilError(t, err)
+			for _, w := range tc.expectedWarnings {
+				assert.Assert(t, is.Contains(warnings, w))
 			}
-		}
-	`)
+		})
+	}
+}
 
-	volStore, err := store.New(volumeRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	drv, err := local.New(volumeRoot, idtools.IDPair{UID: 0, GID: 0})
-	if err != nil {
-		t.Fatal(err)
-	}
-	volumedrivers.Register(drv, volume.DefaultDriverName)
+func sysInfo(t *testing.T, opts ...func(*sysinfo.SysInfo)) sysinfo.SysInfo {
+	t.Helper()
+	si := sysinfo.SysInfo{}
 
-	daemon := &Daemon{
-		root:       rootDir,
-		repository: containerRoot,
-		volumes:    volStore,
-	}
-	err = ioutil.WriteFile(filepath.Join(containerRoot, cid, "config.v2.json"), config, 600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c, err := daemon.load(cid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := daemon.verifyVolumesInfo(c); err != nil {
-		t.Fatal(err)
+	for _, opt := range opts {
+		opt(&si)
 	}
 
-	expected := map[string]volume.MountPoint{
-		"/foo":  {Destination: "/foo", RW: true, Name: vid},
-		"/bar":  {Source: "/foo", Destination: "/bar", RW: true},
-		"/quux": {Source: "/quux", Destination: "/quux", RW: false},
+	if si.OomKillDisable {
+		t.Log(t.Name(), "OOM disable supported")
 	}
-	for id, mp := range c.MountPoints {
-		x, exists := expected[id]
-		if !exists {
-			t.Fatal("volume not migrated")
-		}
-		if mp.Source != x.Source || mp.Destination != x.Destination || mp.RW != x.RW || mp.Name != x.Name {
-			t.Fatalf("got unexpected mountpoint, expected: %+v, got: %+v", x, mp)
-		}
-	}
+	return si
 }

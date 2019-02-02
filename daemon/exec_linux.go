@@ -2,8 +2,8 @@ package daemon // import "github.com/docker/docker/daemon"
 
 import (
 	"github.com/docker/docker/container"
-	"github.com/docker/docker/daemon/caps"
 	"github.com/docker/docker/daemon/exec"
+	"github.com/docker/docker/oci/caps"
 	"github.com/opencontainers/runc/libcontainer/apparmor"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -34,6 +34,8 @@ func (daemon *Daemon) execSetPlatformOpt(c *container.Container, ec *exec.Config
 		if c.AppArmorProfile != "" {
 			appArmorProfile = c.AppArmorProfile
 		} else if c.HostConfig.Privileged {
+			// `docker exec --privileged` does not currently disable AppArmor
+			// profiles. Privileged configuration of the container is inherited
 			appArmorProfile = "unconfined"
 		} else {
 			appArmorProfile = "docker-default"
@@ -50,6 +52,7 @@ func (daemon *Daemon) execSetPlatformOpt(c *container.Container, ec *exec.Config
 				return err
 			}
 		}
+		p.ApparmorProfile = appArmorProfile
 	}
 	daemon.setRlimits(&specs.Spec{Process: p}, c)
 	return nil

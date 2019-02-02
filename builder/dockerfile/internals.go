@@ -27,6 +27,7 @@ import (
 	"github.com/docker/docker/pkg/system"
 	"github.com/docker/go-connections/nat"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 // Archiver defines an interface for copying files from one destination to
@@ -36,7 +37,7 @@ type Archiver interface {
 	UntarPath(src, dst string) error
 	CopyWithTar(src, dst string) error
 	CopyFileWithTar(src, dst string) error
-	IDMappings() *idtools.IDMappings
+	IdentityMapping() *idtools.IdentityMapping
 }
 
 // The builder will use the following interfaces if the container fs implements
@@ -67,11 +68,11 @@ func tarFunc(i interface{}) containerfs.TarFunc {
 func (b *Builder) getArchiver(src, dst containerfs.Driver) Archiver {
 	t, u := tarFunc(src), untarFunc(dst)
 	return &containerfs.Archiver{
-		SrcDriver:     src,
-		DstDriver:     dst,
-		Tar:           t,
-		Untar:         u,
-		IDMappingsVar: b.idMappings,
+		SrcDriver: src,
+		DstDriver: dst,
+		Tar:       t,
+		Untar:     u,
+		IDMapping: b.idMapping,
 	}
 }
 
@@ -83,14 +84,9 @@ func (b *Builder) commit(dispatchState *dispatchState, comment string) error {
 		return errors.New("Please provide a source image with `from` prior to commit")
 	}
 
-	optionsPlatform := system.ParsePlatform(b.options.Platform)
-	runConfigWithCommentCmd := copyRunConfig(dispatchState.runConfig, withCmdComment(comment, optionsPlatform.OS))
-	hit, err := b.probeCache(dispatchState, runConfigWithCommentCmd)
-	if err != nil || hit {
-		return err
-	}
-	id, err := b.create(runConfigWithCommentCmd)
-	if err != nil {
+	runConfigWithCommentCmd := copyRunConfig(dispatchState.runConfig, withCmdComment(comment, dispatchState.operatingSystem))
+	id, err := b.probeAndCreate(dispatchState, runConfigWithCommentCmd)
+	if err != nil || id == "" {
 		return err
 	}
 
@@ -154,7 +150,8 @@ func (b *Builder) exportImage(state *dispatchState, layer builder.RWLayer, paren
 	return nil
 }
 
-func (b *Builder) performCopy(state *dispatchState, inst copyInstruction) error {
+func (b *Builder) performCopy(req dispatchRequest, inst copyInstruction) error {
+	state := req.state
 	srcHash := getSourceHashFromInfos(inst.infos)
 
 	var chownComment string
@@ -164,16 +161,15 @@ func (b *Builder) performCopy(state *dispatchState, inst copyInstruction) error 
 	commentStr := fmt.Sprintf("%s %s%s in %s ", inst.cmdName, chownComment, srcHash, inst.dest)
 
 	// TODO: should this have been using origPaths instead of srcHash in the comment?
-	optionsPlatform := system.ParsePlatform(b.options.Platform)
 	runConfigWithCommentCmd := copyRunConfig(
 		state.runConfig,
-		withCmdCommentString(commentStr, optionsPlatform.OS))
+		withCmdCommentString(commentStr, state.operatingSystem))
 	hit, err := b.probeCache(state, runConfigWithCommentCmd)
 	if err != nil || hit {
 		return err
 	}
 
-	imageMount, err := b.imageSources.Get(state.imageID, true)
+	imageMount, err := b.imageSources.Get(state.imageID, true, req.builder.platform)
 	if err != nil {
 		return errors.Wrapf(err, "failed to get destination image %q", state.imageID)
 	}
@@ -184,19 +180,23 @@ func (b *Builder) performCopy(state *dispatchState, inst copyInstruction) error 
 	}
 	defer rwLayer.Release()
 
-	destInfo, err := createDestInfo(state.runConfig.WorkingDir, inst, rwLayer, b.options.Platform)
+	destInfo, err := createDestInfo(state.runConfig.WorkingDir, inst, rwLayer, state.operatingSystem)
 	if err != nil {
 		return err
 	}
 
-	chownPair := b.idMappings.RootPair()
+	identity := b.idMapping.RootPair()
 	// if a chown was requested, perform the steps to get the uid, gid
 	// translated (if necessary because of user namespaces), and replace
 	// the root pair with the chown pair for copy operations
 	if inst.chownStr != "" {
-		chownPair, err = parseChownFlag(inst.chownStr, destInfo.root.Path(), b.idMappings)
+		identity, err = parseChownFlag(b, state, inst.chownStr, destInfo.root.Path(), b.idMapping)
 		if err != nil {
-			return errors.Wrapf(err, "unable to convert uid/gid chown string to host mapping")
+			if b.options.Platform != "windows" {
+				return errors.Wrapf(err, "unable to convert uid/gid chown string to host mapping")
+			}
+
+			return errors.Wrapf(err, "unable to map container user account name to SID")
 		}
 	}
 
@@ -204,7 +204,7 @@ func (b *Builder) performCopy(state *dispatchState, inst copyInstruction) error 
 		opts := copyFileOptions{
 			decompress: inst.allowLocalDecompression,
 			archiver:   b.getArchiver(info.root, destInfo.root),
-			chownPair:  chownPair,
+			identity:   identity,
 		}
 		if err := performCopyForInfo(destInfo, info, opts); err != nil {
 			return errors.Wrapf(err, "failed to copy files")
@@ -347,6 +347,18 @@ func withEntrypointOverride(cmd []string, entrypoint []string) runConfigModifier
 	}
 }
 
+// withoutHealthcheck disables healthcheck.
+//
+// The dockerfile RUN instruction expect to run without healthcheck
+// so the runConfig Healthcheck needs to be disabled.
+func withoutHealthcheck() runConfigModifier {
+	return func(runConfig *container.Config) {
+		runConfig.Healthcheck = &container.HealthConfig{
+			Test: []string{"NONE"},
+		}
+	}
+}
+
 func copyRunConfig(runConfig *container.Config, modifiers ...runConfigModifier) *container.Config {
 	copy := *runConfig
 	copy.Cmd = copyStringSlice(runConfig.Cmd)
@@ -415,14 +427,14 @@ func (b *Builder) probeAndCreate(dispatchState *dispatchState, runConfig *contai
 	if hit, err := b.probeCache(dispatchState, runConfig); err != nil || hit {
 		return "", err
 	}
-	// Set a log config to override any default value set on the daemon
-	hostConfig := &container.HostConfig{LogConfig: defaultLogConfig}
-	container, err := b.containerManager.Create(runConfig, hostConfig)
-	return container.ID, err
+	return b.create(runConfig)
 }
 
 func (b *Builder) create(runConfig *container.Config) (string, error) {
-	hostConfig := hostConfigFromOptions(b.options)
+	logrus.Debugf("[BUILDER] Command to be executed: %v", runConfig.Cmd)
+
+	isWCOW := runtime.GOOS == "windows" && b.platform != nil && b.platform.OS == "windows"
+	hostConfig := hostConfigFromOptions(b.options, isWCOW)
 	container, err := b.containerManager.Create(runConfig, hostConfig)
 	if err != nil {
 		return "", err
@@ -435,7 +447,7 @@ func (b *Builder) create(runConfig *container.Config) (string, error) {
 	return container.ID, nil
 }
 
-func hostConfigFromOptions(options *types.ImageBuildOptions) *container.HostConfig {
+func hostConfigFromOptions(options *types.ImageBuildOptions, isWCOW bool) *container.HostConfig {
 	resources := container.Resources{
 		CgroupParent: options.CgroupParent,
 		CPUShares:    options.CPUShares,
@@ -463,7 +475,7 @@ func hostConfigFromOptions(options *types.ImageBuildOptions) *container.HostConf
 	// is too small for builder scenarios where many users are
 	// using RUN statements to install large amounts of data.
 	// Use 127GB as that's the default size of a VHD in Hyper-V.
-	if runtime.GOOS == "windows" && options.Platform == "windows" {
+	if isWCOW {
 		hc.StorageOpt = make(map[string]string)
 		hc.StorageOpt["size"] = "127GB"
 	}

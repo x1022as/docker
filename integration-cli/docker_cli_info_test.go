@@ -8,6 +8,7 @@ import (
 
 	"github.com/docker/docker/integration-cli/checker"
 	"github.com/docker/docker/integration-cli/daemon"
+	testdaemon "github.com/docker/docker/internal/test/daemon"
 	"github.com/go-check/check"
 )
 
@@ -69,11 +70,9 @@ func (s *DockerSuite) TestInfoFormat(c *check.C) {
 // TestInfoDiscoveryBackend verifies that a daemon run with `--cluster-advertise` and
 // `--cluster-store` properly show the backend's endpoint in info output.
 func (s *DockerSuite) TestInfoDiscoveryBackend(c *check.C) {
-	testRequires(c, SameHostDaemon, DaemonIsLinux)
+	testRequires(c, testEnv.IsLocalDaemon, DaemonIsLinux)
 
-	d := daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
-		Experimental: testEnv.DaemonInfo.ExperimentalBuild,
-	})
+	d := daemon.New(c, dockerBinary, dockerdBinary, testdaemon.WithEnvironment(testEnv.Execution))
 	discoveryBackend := "consul://consuladdr:consulport/some/path"
 	discoveryAdvertise := "1.1.1.1:2375"
 	d.Start(c, fmt.Sprintf("--cluster-store=%s", discoveryBackend), fmt.Sprintf("--cluster-advertise=%s", discoveryAdvertise))
@@ -88,11 +87,9 @@ func (s *DockerSuite) TestInfoDiscoveryBackend(c *check.C) {
 // TestInfoDiscoveryInvalidAdvertise verifies that a daemon run with
 // an invalid `--cluster-advertise` configuration
 func (s *DockerSuite) TestInfoDiscoveryInvalidAdvertise(c *check.C) {
-	testRequires(c, SameHostDaemon, DaemonIsLinux)
+	testRequires(c, testEnv.IsLocalDaemon, DaemonIsLinux)
 
-	d := daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
-		Experimental: testEnv.DaemonInfo.ExperimentalBuild,
-	})
+	d := daemon.New(c, dockerBinary, dockerdBinary, testdaemon.WithEnvironment(testEnv.Execution))
 	discoveryBackend := "consul://consuladdr:consulport/some/path"
 
 	// --cluster-advertise with an invalid string is an error
@@ -107,11 +104,9 @@ func (s *DockerSuite) TestInfoDiscoveryInvalidAdvertise(c *check.C) {
 // TestInfoDiscoveryAdvertiseInterfaceName verifies that a daemon run with `--cluster-advertise`
 // configured with interface name properly show the advertise ip-address in info output.
 func (s *DockerSuite) TestInfoDiscoveryAdvertiseInterfaceName(c *check.C) {
-	testRequires(c, SameHostDaemon, Network, DaemonIsLinux)
+	testRequires(c, testEnv.IsLocalDaemon, Network, DaemonIsLinux)
 
-	d := daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
-		Experimental: testEnv.DaemonInfo.ExperimentalBuild,
-	})
+	d := daemon.New(c, dockerBinary, dockerdBinary, testdaemon.WithEnvironment(testEnv.Execution))
 	discoveryBackend := "consul://consuladdr:consulport/some/path"
 	discoveryAdvertise := "eth0"
 
@@ -180,11 +175,9 @@ func (s *DockerSuite) TestInfoDisplaysStoppedContainers(c *check.C) {
 }
 
 func (s *DockerSuite) TestInfoDebug(c *check.C) {
-	testRequires(c, SameHostDaemon, DaemonIsLinux)
+	testRequires(c, testEnv.IsLocalDaemon, DaemonIsLinux)
 
-	d := daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
-		Experimental: testEnv.DaemonInfo.ExperimentalBuild,
-	})
+	d := daemon.New(c, dockerBinary, dockerdBinary, testdaemon.WithEnvironment(testEnv.Execution))
 	d.Start(c, "--debug")
 	defer d.Stop(c)
 
@@ -200,14 +193,12 @@ func (s *DockerSuite) TestInfoDebug(c *check.C) {
 }
 
 func (s *DockerSuite) TestInsecureRegistries(c *check.C) {
-	testRequires(c, SameHostDaemon, DaemonIsLinux)
+	testRequires(c, testEnv.IsLocalDaemon, DaemonIsLinux)
 
 	registryCIDR := "192.168.1.0/24"
 	registryHost := "insecurehost.com:5000"
 
-	d := daemon.New(c, dockerBinary, dockerdBinary, daemon.Config{
-		Experimental: testEnv.DaemonInfo.ExperimentalBuild,
-	})
+	d := daemon.New(c, dockerBinary, dockerdBinary, testdaemon.WithEnvironment(testEnv.Execution))
 	d.Start(c, "--insecure-registry="+registryCIDR, "--insecure-registry="+registryHost)
 	defer d.Stop(c)
 
@@ -219,7 +210,7 @@ func (s *DockerSuite) TestInsecureRegistries(c *check.C) {
 }
 
 func (s *DockerDaemonSuite) TestRegistryMirrors(c *check.C) {
-	testRequires(c, SameHostDaemon, DaemonIsLinux)
+	testRequires(c, testEnv.IsLocalDaemon, DaemonIsLinux)
 
 	registryMirror1 := "https://192.168.1.2"
 	registryMirror2 := "http://registry.mirror.com:5000"

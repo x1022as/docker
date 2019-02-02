@@ -6,32 +6,30 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 
 	containertypes "github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/container"
-	"github.com/docker/docker/daemon/caps"
 	daemonconfig "github.com/docker/docker/daemon/config"
 	"github.com/docker/docker/oci"
+	"github.com/docker/docker/oci/caps"
 	"github.com/docker/docker/pkg/idtools"
 	"github.com/docker/docker/pkg/mount"
-	"github.com/docker/docker/volume"
+	volumemounts "github.com/docker/docker/volume/mounts"
 	"github.com/opencontainers/runc/libcontainer/apparmor"
 	"github.com/opencontainers/runc/libcontainer/cgroups"
 	"github.com/opencontainers/runc/libcontainer/devices"
 	"github.com/opencontainers/runc/libcontainer/user"
-	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 )
 
-// nolint: gosimple
-var (
-	deviceCgroupRuleRegex = regexp.MustCompile("^([acb]) ([0-9]+|\\*):([0-9]+|\\*) ([rwm]{1,3})$")
+const (
+	inContainerInitPath = "/sbin/" + daemonconfig.DefaultInitBinary
 )
 
 func setResources(s *specs.Spec, r containertypes.Resources) error {
@@ -115,39 +113,10 @@ func setDevices(s *specs.Spec, c *container.Container) error {
 			devPermissions = append(devPermissions, dPermissions...)
 		}
 
-		for _, deviceCgroupRule := range c.HostConfig.DeviceCgroupRules {
-			ss := deviceCgroupRuleRegex.FindAllStringSubmatch(deviceCgroupRule, -1)
-			if len(ss[0]) != 5 {
-				return fmt.Errorf("invalid device cgroup rule format: '%s'", deviceCgroupRule)
-			}
-			matches := ss[0]
-
-			dPermissions := specs.LinuxDeviceCgroup{
-				Allow:  true,
-				Type:   matches[1],
-				Access: matches[4],
-			}
-			if matches[2] == "*" {
-				major := int64(-1)
-				dPermissions.Major = &major
-			} else {
-				major, err := strconv.ParseInt(matches[2], 10, 64)
-				if err != nil {
-					return fmt.Errorf("invalid major value in device cgroup rule format: '%s'", deviceCgroupRule)
-				}
-				dPermissions.Major = &major
-			}
-			if matches[3] == "*" {
-				minor := int64(-1)
-				dPermissions.Minor = &minor
-			} else {
-				minor, err := strconv.ParseInt(matches[3], 10, 64)
-				if err != nil {
-					return fmt.Errorf("invalid minor value in device cgroup rule format: '%s'", deviceCgroupRule)
-				}
-				dPermissions.Minor = &minor
-			}
-			devPermissions = append(devPermissions, dPermissions)
+		var err error
+		devPermissions, err = oci.AppendDevicePermissionsFromCgroupRules(devPermissions, c.HostConfig.DeviceCgroupRules)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -249,35 +218,17 @@ func setNamespace(s *specs.Spec, ns specs.LinuxNamespace) {
 	s.Linux.Namespaces = append(s.Linux.Namespaces, ns)
 }
 
-func setCapabilities(s *specs.Spec, c *container.Container) error {
-	var caplist []string
-	var err error
-	if c.HostConfig.Privileged {
-		caplist = caps.GetAllCapabilities()
-	} else {
-		caplist, err = caps.TweakCapabilities(s.Process.Capabilities.Effective, c.HostConfig.CapAdd, c.HostConfig.CapDrop)
-		if err != nil {
-			return err
-		}
-	}
-	s.Process.Capabilities.Effective = caplist
-	s.Process.Capabilities.Bounding = caplist
-	s.Process.Capabilities.Permitted = caplist
-	s.Process.Capabilities.Inheritable = caplist
-	return nil
-}
-
 func setNamespaces(daemon *Daemon, s *specs.Spec, c *container.Container) error {
 	userNS := false
 	// user
 	if c.HostConfig.UsernsMode.IsPrivate() {
-		uidMap := daemon.idMappings.UIDs()
+		uidMap := daemon.idMapping.UIDs()
 		if uidMap != nil {
 			userNS = true
 			ns := specs.LinuxNamespace{Type: "user"}
 			setNamespace(s, ns)
 			s.Linux.UIDMappings = specMapping(uidMap)
-			s.Linux.GIDMappings = specMapping(daemon.idMappings.GIDs())
+			s.Linux.GIDMappings = specMapping(daemon.idMapping.GIDs())
 		}
 	}
 	// network
@@ -374,15 +325,6 @@ func specMapping(s []idtools.IDMap) []specs.LinuxIDMapping {
 	return ids
 }
 
-func getMountInfo(mountinfo []*mount.Info, dir string) *mount.Info {
-	for _, m := range mountinfo {
-		if m.Mountpoint == dir {
-			return m
-		}
-	}
-	return nil
-}
-
 // Get the source mount point of directory passed in as argument. Also return
 // optional fields.
 func getSourceMount(source string) (string, string, error) {
@@ -392,32 +334,23 @@ func getSourceMount(source string) (string, string, error) {
 		return "", "", err
 	}
 
-	mountinfos, err := mount.GetMounts()
+	mi, err := mount.GetMounts(mount.ParentsFilter(sourcePath))
 	if err != nil {
 		return "", "", err
 	}
-
-	mountinfo := getMountInfo(mountinfos, sourcePath)
-	if mountinfo != nil {
-		return sourcePath, mountinfo.Optional, nil
+	if len(mi) < 1 {
+		return "", "", fmt.Errorf("Can't find mount point of %s", source)
 	}
 
-	path := sourcePath
-	for {
-		path = filepath.Dir(path)
-
-		mountinfo = getMountInfo(mountinfos, path)
-		if mountinfo != nil {
-			return path, mountinfo.Optional, nil
-		}
-
-		if path == "/" {
-			break
+	// find the longest mount point
+	var idx, maxlen int
+	for i := range mi {
+		if len(mi[i].Mountpoint) > maxlen {
+			maxlen = len(mi[i].Mountpoint)
+			idx = i
 		}
 	}
-
-	// If we are here, we did not find parent mount. Something is wrong.
-	return "", "", fmt.Errorf("Could not find source mount of %s", source)
+	return mi[idx].Mountpoint, mi[idx].Optional, nil
 }
 
 const (
@@ -534,12 +467,12 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 	}
 
 	// Copy all mounts from spec to defaultMounts, except for
-	//  - mounts overriden by a user supplied mount;
+	//  - mounts overridden by a user supplied mount;
 	//  - all mounts under /dev if a user supplied /dev is present;
 	//  - /dev/shm, in case IpcMode is none.
 	// While at it, also
 	//  - set size for /dev/shm from shmsize.
-	var defaultMounts []specs.Mount
+	defaultMounts := s.Mounts[:0]
 	_, mountDev := userMounts["/dev"]
 	for _, m := range s.Mounts {
 		if _, ok := userMounts[m.Destination]; ok {
@@ -566,15 +499,9 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 
 	s.Mounts = defaultMounts
 	for _, m := range mounts {
-		for _, cm := range s.Mounts {
-			if cm.Destination == m.Destination {
-				return duplicateMountPointError(m.Destination)
-			}
-		}
-
 		if m.Source == "tmpfs" {
 			data := m.Data
-			parser := volume.NewParser("linux")
+			parser := volumemounts.NewParser("linux")
 			options := []string{"noexec", "nosuid", "nodev", string(parser.DefaultPropagationMode())}
 			if data != "" {
 				options = append(options, strings.Split(data, ",")...)
@@ -611,7 +538,7 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 		case mount.SLAVE, mount.RSLAVE:
 			var fallback bool
 			if err := ensureSharedOrSlave(m.Source); err != nil {
-				// For backwards compatability purposes, treat mounts from the daemon root
+				// For backwards compatibility purposes, treat mounts from the daemon root
 				// as special since we automatically add rslave propagation to these mounts
 				// when the user did not set anything, so we should fallback to the old
 				// behavior which is to use private propagation which is normally the
@@ -639,7 +566,11 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 			}
 		}
 
-		opts := []string{"rbind"}
+		bindMode := "rbind"
+		if m.NonRecursive {
+			bindMode = "bind"
+		}
+		opts := []string{bindMode}
 		if !m.Writable {
 			opts = append(opts, "ro")
 		}
@@ -667,7 +598,7 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 	if s.Root.Readonly {
 		for i, m := range s.Mounts {
 			switch m.Destination {
-			case "/proc", "/dev/pts", "/dev/mqueue", "/dev":
+			case "/proc", "/dev/pts", "/dev/shm", "/dev/mqueue", "/dev":
 				continue
 			}
 			if _, ok := userMounts[m.Destination]; !ok {
@@ -679,12 +610,10 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 	}
 
 	if c.HostConfig.Privileged {
-		if !s.Root.Readonly {
-			// clear readonly for /sys
-			for i := range s.Mounts {
-				if s.Mounts[i].Destination == "/sys" {
-					clearReadOnly(&s.Mounts[i])
-				}
+		// clear readonly for /sys
+		for i := range s.Mounts {
+			if s.Mounts[i].Destination == "/sys" {
+				clearReadOnly(&s.Mounts[i])
 			}
 		}
 		s.Linux.ReadonlyPaths = nil
@@ -693,7 +622,7 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 
 	// TODO: until a kernel/mount solution exists for handling remount in a user namespace,
 	// we must clear the readonly flag for the cgroups mount (@mrunalp concurs)
-	if uidMap := daemon.idMappings.UIDs(); uidMap != nil || c.HostConfig.Privileged {
+	if uidMap := daemon.idMapping.UIDs(); uidMap != nil || c.HostConfig.Privileged {
 		for i, m := range s.Mounts {
 			if m.Type == "cgroup" {
 				clearReadOnly(&s.Mounts[i])
@@ -705,6 +634,9 @@ func setMounts(daemon *Daemon, s *specs.Spec, c *container.Container, mounts []c
 }
 
 func (daemon *Daemon) populateCommonSpec(s *specs.Spec, c *container.Container) error {
+	if c.BaseFS == nil {
+		return errors.New("populateCommonSpec: BaseFS of container " + c.ID + " is unexpectedly nil")
+	}
 	linkedEnv, err := daemon.setupLinkedContainers(c)
 	if err != nil {
 		return err
@@ -713,7 +645,7 @@ func (daemon *Daemon) populateCommonSpec(s *specs.Spec, c *container.Container) 
 		Path:     c.BaseFS.Path(),
 		Readonly: c.HostConfig.ReadonlyRootfs,
 	}
-	if err := c.SetupWorkingDirectory(daemon.idMappings.RootPair()); err != nil {
+	if err := c.SetupWorkingDirectory(daemon.idMapping.RootPair()); err != nil {
 		return err
 	}
 	cwd := c.Config.WorkingDir
@@ -728,19 +660,16 @@ func (daemon *Daemon) populateCommonSpec(s *specs.Spec, c *container.Container) 
 	if c.HostConfig.PidMode.IsPrivate() {
 		if (c.HostConfig.Init != nil && *c.HostConfig.Init) ||
 			(c.HostConfig.Init == nil && daemon.configStore.Init) {
-			s.Process.Args = append([]string{"/dev/init", "--", c.Path}, c.Args...)
-			var path string
-			if daemon.configStore.InitPath == "" {
+			s.Process.Args = append([]string{inContainerInitPath, "--", c.Path}, c.Args...)
+			path := daemon.configStore.InitPath
+			if path == "" {
 				path, err = exec.LookPath(daemonconfig.DefaultInitBinary)
 				if err != nil {
 					return err
 				}
 			}
-			if daemon.configStore.InitPath != "" {
-				path = daemon.configStore.InitPath
-			}
 			s.Mounts = append(s.Mounts, specs.Mount{
-				Destination: "/dev/init",
+				Destination: inContainerInitPath,
 				Type:        "bind",
 				Source:      path,
 				Options:     []string{"bind", "ro"},
@@ -750,7 +679,15 @@ func (daemon *Daemon) populateCommonSpec(s *specs.Spec, c *container.Container) 
 	s.Process.Cwd = cwd
 	s.Process.Env = c.CreateDaemonEnvironment(c.Config.Tty, linkedEnv)
 	s.Process.Terminal = c.Config.Tty
-	s.Hostname = c.FullHostname()
+
+	s.Hostname = c.Config.Hostname
+	// There isn't a field in the OCI for the NIS domainname, but luckily there
+	// is a sysctl which has an identical effect to setdomainname(2) so there's
+	// no explicit need for runtime support.
+	s.Linux.Sysctl = make(map[string]string)
+	if c.Config.Domainname != "" {
+		s.Linux.Sysctl["kernel.domainname"] = c.Config.Domainname
+	}
 
 	return nil
 }
@@ -786,7 +723,11 @@ func (daemon *Daemon) createSpec(c *container.Container) (retSpec *specs.Spec, e
 	if err := setResources(&s, c.HostConfig.Resources); err != nil {
 		return nil, fmt.Errorf("linux runtime spec resources: %v", err)
 	}
-	s.Linux.Sysctl = c.HostConfig.Sysctls
+	// We merge the sysctls injected above with the HostConfig (latter takes
+	// precedence for backwards-compatibility reasons).
+	for k, v := range c.HostConfig.Sysctls {
+		s.Linux.Sysctl[k] = v
+	}
 
 	p := s.Linux.CgroupsPath
 	if useSystemd {
@@ -822,7 +763,11 @@ func (daemon *Daemon) createSpec(c *container.Container) (retSpec *specs.Spec, e
 	if err := setNamespaces(daemon, &s, c); err != nil {
 		return nil, fmt.Errorf("linux spec namespaces: %v", err)
 	}
-	if err := setCapabilities(&s, c); err != nil {
+	capabilities, err := caps.TweakCapabilities(oci.DefaultCapabilities(), c.HostConfig.CapAdd, c.HostConfig.CapDrop, c.HostConfig.Capabilities, c.HostConfig.Privileged)
+	if err != nil {
+		return nil, fmt.Errorf("linux spec capabilities: %v", err)
+	}
+	if err := oci.SetCapabilities(&s, capabilities); err != nil {
 		return nil, fmt.Errorf("linux spec capabilities: %v", err)
 	}
 	if err := setSeccomp(daemon, &s, c); err != nil {
@@ -879,7 +824,7 @@ func (daemon *Daemon) createSpec(c *container.Container) (retSpec *specs.Spec, e
 			s.Hooks = &specs.Hooks{
 				Prestart: []specs.Hook{{
 					Path: target,
-					Args: []string{"libnetwork-setkey", c.ID, daemon.netController.ID()},
+					Args: []string{"libnetwork-setkey", "-exec-root=" + daemon.configStore.GetExecRoot(), c.ID, daemon.netController.ID()},
 				}},
 			}
 		}
@@ -913,6 +858,14 @@ func (daemon *Daemon) createSpec(c *container.Container) (retSpec *specs.Spec, e
 	s.Process.NoNewPrivileges = c.NoNewPrivileges
 	s.Process.OOMScoreAdj = &c.HostConfig.OomScoreAdj
 	s.Linux.MountLabel = c.MountLabel
+
+	// Set the masked and readonly paths with regard to the host config options if they are set.
+	if c.HostConfig.MaskedPaths != nil {
+		s.Linux.MaskedPaths = c.HostConfig.MaskedPaths
+	}
+	if c.HostConfig.ReadonlyPaths != nil {
+		s.Linux.ReadonlyPaths = c.HostConfig.ReadonlyPaths
+	}
 
 	return &s, nil
 }

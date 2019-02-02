@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -13,13 +14,12 @@ import (
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/go-check/check"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	"golang.org/x/net/context"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func (s *DockerSuite) TestContainersAPICreateMountsBindNamedPipe(c *check.C) {
-	testRequires(c, SameHostDaemon, DaemonIsWindowsAtLeastBuild(16299)) // Named pipe support was added in RS3
+	testRequires(c, testEnv.IsLocalDaemon, DaemonIsWindowsAtLeastBuild(16299)) // Named pipe support was added in RS3
 
 	// Create a host pipe to map into the container
 	hostPipeName := fmt.Sprintf(`\\.\pipe\docker-cli-test-pipe-%x`, rand.Uint64())
@@ -65,12 +65,12 @@ func (s *DockerSuite) TestContainersAPICreateMountsBindNamedPipe(c *check.C) {
 			},
 		},
 		nil, name)
-	require.NoError(c, err)
+	assert.NilError(c, err)
 
 	err = client.ContainerStart(ctx, name, types.ContainerStartOptions{})
-	require.NoError(c, err)
+	assert.NilError(c, err)
 
 	err = <-ch
-	require.NoError(c, err)
-	assert.Equal(c, text, strings.TrimSpace(string(b)))
+	assert.NilError(c, err)
+	assert.Check(c, is.Equal(text, strings.TrimSpace(string(b))))
 }

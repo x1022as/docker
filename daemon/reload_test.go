@@ -1,6 +1,7 @@
 package daemon // import "github.com/docker/docker/daemon"
 
 import (
+	"os"
 	"reflect"
 	"sort"
 	"testing"
@@ -12,7 +13,8 @@ import (
 	_ "github.com/docker/docker/pkg/discovery/memory"
 	"github.com/docker/docker/registry"
 	"github.com/docker/libnetwork"
-	"github.com/stretchr/testify/assert"
+	"gotest.tools/assert"
+	is "gotest.tools/assert/cmp"
 )
 
 func TestDaemonReloadLabels(t *testing.T) {
@@ -88,7 +90,7 @@ func TestDaemonReloadAllowNondistributableArtifacts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	actual := []string{}
+	var actual []string
 	serviceConfig := daemon.RegistryService.ServiceConfig()
 	for _, value := range serviceConfig.AllowNondistributableArtifactsCIDRs {
 		actual = append(actual, value.String())
@@ -97,7 +99,7 @@ func TestDaemonReloadAllowNondistributableArtifacts(t *testing.T) {
 
 	sort.Strings(registries)
 	sort.Strings(actual)
-	assert.Equal(t, registries, actual)
+	assert.Check(t, is.DeepEqual(registries, actual))
 }
 
 func TestDaemonReloadMirrors(t *testing.T) {
@@ -498,6 +500,9 @@ func TestDaemonDiscoveryReloadOnlyClusterAdvertise(t *testing.T) {
 }
 
 func TestDaemonReloadNetworkDiagnosticPort(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("root required")
+	}
 	daemon := &Daemon{
 		imageService: images.NewImageService(images.ImageServiceConfig{}),
 	}

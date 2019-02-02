@@ -1,18 +1,18 @@
 package dockerfile // import "github.com/docker/docker/builder/dockerfile"
 
 import (
+	"context"
 	"runtime"
 
 	"github.com/docker/docker/api/types/backend"
 	"github.com/docker/docker/builder"
 	dockerimage "github.com/docker/docker/image"
-	"github.com/docker/docker/pkg/system"
+	specs "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/net/context"
 )
 
-type getAndMountFunc func(string, bool) (builder.Image, builder.ROLayer, error)
+type getAndMountFunc func(string, bool, *specs.Platform) (builder.Image, builder.ROLayer, error)
 
 // imageSources mounts images and provides a cache for mounted images. It tracks
 // all images so they can be unmounted at the end of the build.
@@ -23,7 +23,7 @@ type imageSources struct {
 }
 
 func newImageSources(ctx context.Context, options builderOptions) *imageSources {
-	getAndMount := func(idOrRef string, localOnly bool) (builder.Image, builder.ROLayer, error) {
+	getAndMount := func(idOrRef string, localOnly bool, platform *specs.Platform) (builder.Image, builder.ROLayer, error) {
 		pullOption := backend.PullOptionNoPull
 		if !localOnly {
 			if options.Options.PullParent {
@@ -32,12 +32,11 @@ func newImageSources(ctx context.Context, options builderOptions) *imageSources 
 				pullOption = backend.PullOptionPreferLocal
 			}
 		}
-		optionsPlatform := system.ParsePlatform(options.Options.Platform)
 		return options.Backend.GetImageAndReleasableLayer(ctx, idOrRef, backend.GetImageAndLayerOptions{
 			PullOption: pullOption,
 			AuthConfig: options.Options.AuthConfigs,
 			Output:     options.ProgressWriter.Output,
-			OS:         optionsPlatform.OS,
+			Platform:   platform,
 		})
 	}
 
@@ -47,12 +46,12 @@ func newImageSources(ctx context.Context, options builderOptions) *imageSources 
 	}
 }
 
-func (m *imageSources) Get(idOrRef string, localOnly bool) (*imageMount, error) {
+func (m *imageSources) Get(idOrRef string, localOnly bool, platform *specs.Platform) (*imageMount, error) {
 	if im, ok := m.byImageID[idOrRef]; ok {
 		return im, nil
 	}
 
-	image, layer, err := m.getImage(idOrRef, localOnly)
+	image, layer, err := m.getImage(idOrRef, localOnly, platform)
 	if err != nil {
 		return nil, err
 	}
